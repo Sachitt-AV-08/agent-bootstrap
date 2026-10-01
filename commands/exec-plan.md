@@ -7,9 +7,9 @@ Execute the plan in `PLAN.md` for `$ARGUMENTS` (or the plan file the user names)
 Procedure:
 1. Read `PLAN.md`. If it is missing, stop and say: run `/plan-feature <description>` first.
    If it has no verify gate for a phase, stop — a phase without a gate cannot be executed safely.
-2. Build the dependency graph from each phase's `parallel:` marker. Identify the critical path.
+2. coder the dependency graph from each phase's `parallel:` marker. Identify the critical path.
 3. **Gate wave 0:** run the first phase's verify command on the clean tree. If the baseline
-   is already failing, stop and report that — do not build on a broken baseline.
+   is already failing, stop and report that — do not coder on a broken baseline.
 4. For each wave of independent phases, spawn one `coder` subagent per phase with:
    - the worktree path (use `.lane/trees/<phase>-<n>/`, or the current tree for a single phase)
    - the phase's exact scope (the files it owns, and the files it must not touch)

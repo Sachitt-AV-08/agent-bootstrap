@@ -358,7 +358,10 @@ function Build-AgentsBlock {
       if ($a.Contains('description') -and $a['description']) { $entry['description'] = $a['description'] }
       if ($a.Contains('model') -and $a['model'])             { $entry['model'] = $a['model'] }
       if ($a.Contains('system') -and $a['system'])           { $entry['system'] = $a['system'] }
-      if ($a.Contains('mode') -and $a['mode'] -and $a['mode'] -ne 'subagent') { $entry['mode'] = $a['mode'] }
+      # `mode` MUST always be written out. In OpenCode V2 an omitted mode defaults
+      # to "primary", which would put all 163 domain agents into the Tab/Shift+Tab
+      # primary-agent cycle and bury the built-in build/plan pair.
+      if ($a.Contains('mode') -and $a['mode']) { $entry['mode'] = $a['mode'] }
       $perms = @()
       if ($a.Contains('permissions') -and $a['permissions']) {
         foreach ($p in $a['permissions']) {
@@ -467,6 +470,20 @@ function Write-TargetConfig {
   )
   $tpl = Join-Path $Source 'config/opencode.jsonc'
   if (-not (Test-Path $tpl)) { throw "template not found: $tpl" }
+
+  # tui.json carries the theme and keybinds, so an existing one is never
+  # clobbered - a user's colour scheme and shortcuts are theirs to choose.
+  $tplTui = Join-Path $Source 'config/tui.json'
+  $targetTui = Join-Path $Target 'tui.json'
+  if (Test-Path $tplTui) {
+    if (Test-Path $targetTui) {
+      Write-Info 'kept your existing tui.json (theme and keybinds untouched)'
+    } elseif (-not $DryRun) {
+      New-Item -ItemType Directory -Force $Target | Out-Null
+      Copy-Item -LiteralPath $tplTui -Destination $targetTui -Force
+      Write-Ok 'tui.json installed (tokyonight theme, shift+tab cycles plan/build)'
+    }
+  }
 
   # ---- build the MCP server map first (template, then preserved user entries) ----
   $want = @($McpNames -split ',' | Where-Object { $_ -and $_ -ne 'merge' })

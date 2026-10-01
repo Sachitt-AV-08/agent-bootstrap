@@ -23,9 +23,9 @@
 - **asset-collector** - Find candidate footage, music, and image assets for a video.
 - **certification-creator** - Create certification exams with rubrics and answer keys.
 - **color-grader** - Apply consistent color correction and grading across a video.
-- **component-catalog-builder** - Build a component catalog with props, states, and usage guidance.
+- **component-catalog-builder** - coder a component catalog with props, states, and usage guidance.
 - **design-token-documenter** - Document design tokens with usage rules and constraints.
-- **exercise-builder** - Build hands-on exercises with checks and solutions.
+- **exercise-builder** - coder hands-on exercises with checks and solutions.
 - **faq-curator** - Curate frequently asked questions from real support and search data.
 - **genesis-video-pipeline** - Render video from a scene DSL using the genesis pipeline.
 - **glossary-maintainer** - Maintain a glossary of terms used across the documentation.
@@ -83,9 +83,9 @@
 - **blog-post-writer** - Write technical blog posts that explain engineering work clearly.
 - **case-study-author** - Write case studies grounded in real customer outcomes.
 - **changelog-curator** - Curate changelog entries from commits, pull requests, and releases.
-- **comparison-guide-builder** - Build fair comparison guides between products or approaches.
+- **comparison-guide-builder** - coder fair comparison guides between products or approaches.
 - **decision-record-keeper** - Write and maintain architecture decision records.
-- **example-app-builder** - Build runnable example apps that demonstrate project features in realistic ways.
+- **example-app-builder** - coder runnable example apps that demonstrate project features in realistic ways.
 - **launch-announcement-drafter** - Draft launch announcements that match the shipped release.
 - **onboarding-engineer** - Produce a first-day path for new contributors to a codebase.
 - **readme-generator** - Generate or refresh README files from the real state of a project.
@@ -106,7 +106,7 @@
 - **memory-consolidator** - Merge duplicate memories and surface contradictions without deleting anything on its own initiative.
 - **qdrant-filter-query** - Run filtered vector queries in Qdrant and report the payload filters used.
 - **qdrant-upsert** - Upsert points and vectors into a per-project Qdrant collection with explicit payloads.
-- **sqlite-vec-indexer** - Build and refresh a local SQLite vector index of documents for fast retrieval.
+- **sqlite-vec-indexer** - coder and refresh a local SQLite vector index of documents for fast retrieval.
 
 ## meta (6)
 

@@ -10,6 +10,13 @@
   "shell": "pwsh.exe",
   "update": "notify",
 
+  // ── Agent selection ────────────────────────────────────────────────
+  // Only the two built-in primary agents (build, plan) are meant to appear in
+  // the Tab / Shift+Tab cycle. Every agent generated below is mode:"subagent",
+  // so the model picks the right one automatically from its description and you
+  // can still @-mention any of them by hand.
+  "default_agent": "build",
+
   // ── Worktrees ─────────────────────────────────────────────────────
   // Fleet agents work in isolated worktrees under this path.
   "worktree": {

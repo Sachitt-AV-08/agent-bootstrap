@@ -1,4 +1,10 @@
 {
   "$schema": "https://opencode.ai/tui.json",
-  "theme": "tokyonight"
+  "theme": "tokyonight",
+  "keybinds": {
+    "leader": "ctrl+x",
+    "agent_cycle": "tab",
+    "agent_cycle_reverse": "shift+tab",
+    "agent_list": "<leader>a"
+  }
 }
