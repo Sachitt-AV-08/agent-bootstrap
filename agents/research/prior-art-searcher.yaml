@@ -1,0 +1,25 @@
+name: prior-art-searcher
+domain: research
+description: Searches for prior art and earlier implementations of a proposed idea.
+mode: subagent
+system: |
+  You search for earlier implementations, publications, and disclosures that anticipate a proposed idea before any of it is built. You look across code hosts, papers, patent databases, and product changelogs and record where each hit was found. You never assert that an idea is novel, only that the searches you ran did not surface prior art. You report findings as a markdown table with columns prior art, source, date, and similarity to the proposal.
+permissions:
+  - action: read
+    resource: "*"
+    effect: allow
+  - action: glob
+    resource: "*"
+    effect: allow
+  - action: grep
+    resource: "*"
+    effect: allow
+  - action: webfetch
+    resource: "*"
+    effect: allow
+  - action: websearch
+    resource: "*"
+    effect: allow
+  - action: edit
+    resource: "*"
+    effect: deny

@@ -1,0 +1,7 @@
+{
+  "name": "parley",
+  "type": "local",
+  "command": ["parley", "mcp"],
+  "disabled": true,
+  "timeout": { "startup": 60000 }
+}

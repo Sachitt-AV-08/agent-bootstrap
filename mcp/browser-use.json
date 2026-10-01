@@ -1,0 +1,7 @@
+{
+  "name": "browser-use",
+  "type": "local",
+  "command": ["python", "-m", "browser_use.mcp.cli_mcp"],
+  "environment": { "BH_CLIENT": "browser-use-mcp" },
+  "timeout": { "startup": 60000 }
+}

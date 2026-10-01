@@ -1,0 +1,7 @@
+{
+  "name": "genesis",
+  "type": "local",
+  "command": ["genesis", "mcp"],
+  "disabled": true,
+  "timeout": { "startup": 60000 }
+}

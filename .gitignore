@@ -1,0 +1,15 @@
+# agent-bootstrap
+.lane/                # fleet worktrees
+.opencode/
+*.log
+.DS_Store
+Thumbs.db
+node_modules/
+__pycache__/
+*.pyc
+.env
+.env.*
+!.env.example
+*.db
+*.db-wal
+*.db-shm

@@ -1,0 +1,7 @@
+{
+  "name": "orvima",
+  "type": "local",
+  "command": ["orvima", "mcp"],
+  "disabled": true,
+  "timeout": { "startup": 60000 }
+}

@@ -1,0 +1,7 @@
+{
+  "name": "vision",
+  "type": "local",
+  "command": ["python", "~/.config/opencode/mcp/vision-adapter.py"],
+  "environment": { "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8" },
+  "timeout": { "startup": 90000 }
+}

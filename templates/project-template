@@ -1,0 +1,66 @@
+# Project Template
+
+Use this template when creating new projects in `projects/`.
+
+## Structure
+
+```
+projects/<project-name>/
+├── .opencode/              # Project-specific OpenCode config
+│   ├── agents/             # Custom agents
+│   ├── commands/           # Custom commands
+│   └── settings.jsonc      # Project settings override
+├── src/                    # Source code
+├── tests/                  # Tests
+├── docs/                   # Documentation
+├── scripts/                # Build/deploy scripts
+├── .gitignore
+├── README.md
+├── AGENTS.md               # Project-specific agent instructions
+├── package.json / pyproject.toml / Cargo.toml / go.mod
+└── CLAUDE.md               # For Claude Code compatibility
+```
+
+## Quick Start
+
+```bash
+# Copy template
+cp -r templates/project-template projects/my-project
+
+# Or use the script
+./scripts/new-project.sh my-project
+```
+
+## Required Files
+
+Every project should have:
+
+1. **README.md** - Project overview, setup, usage
+2. **AGENTS.md** - Project-specific instructions for agents
+3. **.gitignore** - Appropriate for the language
+4. **License** - If open source
+
+## Language-Specific Templates
+
+- `templates/python-project/` - Python with uv, pytest, ruff
+- `templates/node-project/` - Node/TypeScript with vitest, eslint
+- `templates/rust-project/` - Rust with cargo
+- `templates/go-project/` - Go with modules
+
+## OpenCode Project Config
+
+Create `.opencode/settings.jsonc`:
+
+```jsonc
+{
+  "model": { "provider": "kilo", "model": "kilo/kilo-auto/free" },
+  "agents": {
+    "default": "project-main",
+    "project-main": {
+      "systemPrompt": "You are working on <project-name>. Follow AGENTS.md.",
+      "permissions": { "tools": ["*"] }
+    }
+  },
+  "skills": { "directories": ["${workspace}/.opencode/skills"] }
+}
+```

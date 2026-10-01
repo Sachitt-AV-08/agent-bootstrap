@@ -1,0 +1,89 @@
+# Skill Template
+
+Use this as a starting point for creating new skills.
+
+## Structure
+
+```
+skills/<skill-name>/
+├── skill.json          # Skill manifest (required)
+├── instructions.md     # Main instructions (required)
+├── references/         # Reference docs (optional)
+│   └── ...
+├── scripts/            # Helper scripts (optional)
+│   └── ...
+└── templates/          # Template files (optional)
+    └── ...
+```
+
+## skill.json
+
+```json
+{
+  "name": "<skill-name>",
+  "version": "1.0.0",
+  "description": "Brief description of what this skill does",
+  "author": "Your Name",
+  "license": "MIT",
+  "triggers": [
+    "keyword1",
+    "keyword2",
+    "phrase that triggers this skill"
+  ],
+  "dependencies": [],
+  "entryPoint": "instructions.md"
+}
+```
+
+## instructions.md
+
+```markdown
+# <Skill Name>
+
+## When to Use
+
+Use this skill when <specific conditions>.
+
+## Prerequisites
+
+- <Requirement 1>
+- <Requirement 2>
+
+## Instructions
+
+### Step 1: <Name>
+
+<Detailed instructions>
+
+### Step 2: <Name>
+
+<Detailed instructions>
+
+## Examples
+
+<Code examples showing usage>
+
+## Common Pitfalls
+
+- <Pitfall 1>
+- <Pitfall 2>
+
+## Related Skills
+
+- <Related skill 1>
+- <Related skill 2>
+```
+
+## Creating a New Skill
+
+1. Copy this template: `cp -r skills/skill-template skills/my-skill`
+2. Edit `skill.json` with your skill's metadata
+3. Write `instructions.md` with detailed guidance
+4. Add any reference docs to `references/`
+5. Test by invoking the skill in a session
+
+## Publishing
+
+To share a skill:
+1. Push to a Git repository
+2. Users can install with: `opencode skill install <git-url>`

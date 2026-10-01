@@ -1,0 +1,15 @@
+{
+  "name": "code-gen",
+  "version": "1.0.0",
+  "description": "Generate boilerplate code from specifications",
+  "author": "agent-bootstrap",
+  "license": "MIT",
+  "triggers": [
+    "generate code",
+    "create boilerplate",
+    "scaffold",
+    "code generation"
+  ],
+  "dependencies": [],
+  "entryPoint": "instructions.md"
+}

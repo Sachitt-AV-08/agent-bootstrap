@@ -1,0 +1,13 @@
+[project]
+name = "debugging-repo"
+version = "0.1.0"
+description = "A buggy project for debugging practice"
+requires-python = ">=3.12"
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "pytest-cov>=4.1"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
