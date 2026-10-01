@@ -65,6 +65,7 @@ $SkipMcp      = $false
 $Force        = $false
 $DryRun       = $false
 $SelfTest     = $false
+$Interactive  = $false
 $InstallDir   = ""
 $TargetConfig = ""
 $Model        = "kilo/kilo-auto/free"
@@ -82,6 +83,7 @@ $script:With    = @()
 # caches consulted before anything populates them.
 $script:BuPython         = $null
 $script:BuPythonResolved = $false
+$script:SourceRoot       = ''
 
 # --------------------------- constants ---------------------------
 
@@ -100,6 +102,7 @@ $Script:Usage = @'
     --all                  every domain (this is the default)
     --minimal              core agents and commands only, no Python packages
     --domains a,b,c        install specific domains
+    --interactive          be asked what to install, in plain language
     --with orvima,parley   also register these project MCP servers
 
   SAFETY
@@ -121,10 +124,12 @@ $Script:Usage = @'
     --help                 this message
 
   EXAMPLES
-    ./install.ps1 --dry-run
-    ./install.ps1 --minimal
+    ./install.ps1                      install everything
+    ./install.ps1 --interactive        be asked what to install
+    ./install.ps1 --dry-run            preview, change nothing
+    ./install.ps1 --minimal            just the essentials
+    ./install.ps1 --self-test         check the installer works
     ./install.ps1 --domains research,debugging
-    ./install.ps1 --all --with orvima,parley,genesis
 '@
 
 $Script:AllDomains  = @(
@@ -271,6 +276,7 @@ function Resolve-Selection {
     'all'='All'; 'minimal'='Minimal'; 'force'='Force'; 'f'='Force'
     'skipdeps'='SkipDeps'; 'skipmcp'='SkipMcp'; 'dryrun'='DryRun'
     'selftest'='SelfTest'; 'help'='Help'; 'h'='Help'; '?'='Help'
+    'interactive'='Interactive'; 'i'='Interactive'; 'wizard'='Interactive'
   }
   # canonical key -> variable name. The display name and example are kept
   # separately because the canonical key has no dashes ("targetconfig") and
@@ -1009,6 +1015,168 @@ function Invoke-Doctor {
   return $ok
 }
 
+# --------------------------- interactive mode ---------------------
+
+function Test-Interactive {
+  # True only when a human can actually answer a question. When the script is
+  # piped (`irm ... | iex`) or run by CI, stdin is redirected and any prompt
+  # would either hang forever or silently eat the next line of the pipeline.
+  if ([Console]::IsInputRedirected)  { return $false }
+  if ([Console]::IsOutputRedirected) { return $false }
+  # $Host.UI.RawUI is absent in some non-interactive hosts; treat that as no
+  if ($null -eq $Host.UI.RawUI) { return $false }
+  return $true
+}
+
+function Read-Choice {
+  # One line, bounded, never throws. Returns $null on empty input or EOF so the
+  # caller can apply its own default rather than blocking forever.
+  param([string]$Prompt, [int]$Default)
+  try {
+    $raw = Read-Host $Prompt
+  } catch {
+    return $null
+  }
+  if ($null -eq $raw) { return $null }
+  $raw = $raw.Trim()
+  if (-not $raw) { return $Default }
+  $n = 0
+  if ([int]::TryParse($raw, [ref]$n)) { return $n }
+  return $null
+}
+
+function Invoke-InteractiveSetup {
+  <#
+    Aimed at someone who has never opened a terminal. Three questions, each
+    with a safe default, and Enter always takes the recommended path. Anything
+    non-interactive falls straight through to the full install.
+  #>
+  $n = 0
+  $totalAgents = @(Get-ChildItem (Join-Path $Script:SourceRoot 'agents') -Recurse -Filter '*.yaml' -File -ErrorAction SilentlyContinue).Count
+
+  Write-Host ''
+  Write-Host '  agent-bootstrap  -  let us set this up' -ForegroundColor White
+  Write-Host '  ------------------------------------------------' -ForegroundColor DarkGray
+  Write-Host ''
+  Write-Host "  This installs OpenCode plus about $totalAgents ready-to-use AI agents," -ForegroundColor Gray
+  Write-Host '  commands, and skills. It takes a few minutes. Nothing you already' -ForegroundColor Gray
+  Write-Host '  have is deleted - your current setup is backed up first.' -ForegroundColor Gray
+  Write-Host ''
+
+  Write-Host '  1.  Everything, please            (recommended)' -ForegroundColor White
+  Write-Host "      all $totalAgents agents, 10 commands, 6 skill packs" -ForegroundColor DarkGray
+  Write-Host ''
+  Write-Host '  2.  Just the essentials' -ForegroundColor White
+  Write-Host '      the core agents and commands, no downloads' -ForegroundColor DarkGray
+  Write-Host ''
+  Write-Host '  3.  Choose which parts I need' -ForegroundColor White
+  Write-Host '      pick from a list of what each part is for' -ForegroundColor DarkGray
+  Write-Host ''
+
+  $pick = Read-Choice '  Type 1, 2 or 3 and press Enter [1]:' 1
+  if ($null -eq $pick) { $pick = 1 }
+
+  switch ($pick) {
+    1 {
+      $script:Domains = @($Script:AllDomains)
+      Write-Host ''; Write-Ok 'Installing everything. This is the full setup.'
+      return
+    }
+    2 {
+      $script:Domains = @('core')
+      Write-Host ''; Write-Ok 'Installing just the essentials (no downloads needed).'
+      return
+    }
+    3 { }
+    default {
+      Write-Host ''; Write-Info 'That is not one of the choices - going with everything.'
+      $script:Domains = @($Script:AllDomains)
+      return
+    }
+  }
+
+  # ---- option 3: pick domains, described in plain language ----
+  Write-Host ''
+  Write-Host '  Which parts do you want? Type the numbers, separated by spaces or commas.' -ForegroundColor White
+  Write-Host '  Press Enter on its own to go back to installing everything.' -ForegroundColor DarkGray
+  Write-Host ''
+
+  # Descriptions matter more than names: "security" means nothing to someone
+  # who has not used these tools, but "catch bad code before it ships" does.
+  $blurb = @{
+    'core'           = 'the core agents every task uses'
+    'security'       = 'find vulnerabilities and review code safely'
+    'performance'    = 'profile and speed up slow code'
+    'api'            = 'design and document APIs'
+    'data-ml'        = 'data analysis and machine learning'
+    'frontend'       = 'web interfaces, React, CSS'
+    'backend-infra'  = 'servers, databases, deployment'
+    'testing'        = 'write tests and find flaky ones'
+    'docs-dx'        = 'write and maintain documentation'
+    'migration'      = 'move old code to new frameworks'
+    'specialty'      = 'specialist tools: PDFs, spreadsheets, diagrams'
+    'meta'           = 'tools that manage your other agents'
+    'content'        = 'video, audio and images'
+    'research'       = 'search papers, gather and summarise sources'
+    'debugging'      = 'track down why something broke'
+    'web-scraping'   = 'pull data off websites'
+    'social-media'   = 'LinkedIn and Instagram'
+    'memory'         = 'long-term memory and vector search'
+    'orchestration'  = 'run many agents in parallel across worktrees'
+    'projects'       = 'project-specific helpers'
+  }
+  $i = 0
+  foreach ($d in $Script:AllDomains) {
+    $i++
+    $desc = if ($blurb.ContainsKey($d)) { $blurb[$d] } else { '' }
+    Write-Host ("   {0,2}.  {1,-15} {2}" -f $i, $d, $desc) -ForegroundColor Gray
+  }
+  Write-Host ''
+
+  $raw = $null
+  try { $raw = Read-Host '  Numbers (blank = everything):' } catch { $raw = $null }
+  if ($null -eq $raw -or -not $raw.Trim()) {
+    Write-Host ''
+    Write-Info 'Going with everything instead.'
+    $script:Domains = @($Script:AllDomains)
+    return
+  }
+
+  $chosen = New-Object System.Collections.Generic.List[string]
+  $bad = New-Object System.Collections.Generic.List[string]
+  foreach ($tok in ($raw -split '[\s,]+')) {
+    if (-not $tok) { continue }
+    $idx = 0
+    if ([int]::TryParse($tok, [ref]$idx) -and $idx -ge 1 -and $idx -le $Script:AllDomains.Count) {
+      $chosen.Add($Script:AllDomains[$idx - 1])
+    } else {
+      $bad.Add($tok)
+    }
+  }
+
+  if ($bad.Count) {
+    Write-Host ''
+    Write-Warn2 "I did not recognise: $($bad -join ', ')"
+    Write-Info "Valid names are: $($Script:AllDomains -join ', ')"
+  }
+  if ($chosen.Count -eq 0) {
+    Write-Host ''
+    Write-Info 'Nothing valid was chosen, so installing everything.'
+    $script:Domains = @($Script:AllDomains)
+    return
+  }
+
+  # core is always added: the fleet commands depend on it, so installing
+  # without it leaves half the commands referencing missing agents.
+  # Materialise the List to a plain array first. `List[string] + 'core'`
+  # concatenates onto the *last element* in PowerShell 7, which silently
+  # produces a domain named "performancecore" instead of adding core.
+  $picked = @($chosen | Select-Object -Unique)
+  $script:Domains = @(@($picked) + @('core') | Select-Object -Unique)
+  Write-Host ''
+  Write-Ok "Installing: $($script:Domains -join ', ')"
+}
+
 # --------------------------- main ---------------------------------
 
 # Resolve-Selection parses $args literally; it also sets $script:Help
@@ -1035,20 +1203,39 @@ if ($SelfTest) {
   exit $LASTEXITCODE
 }
 
-Write-Host ''
-Write-Host '  agent-bootstrap' -ForegroundColor White -NoNewline
-Write-Host '  -  universal AI agent setup' -ForegroundColor DarkGray
-Write-Host '  ------------------------------------------------' -ForegroundColor DarkGray
-
 # Resolve-Selection already split flags from values; read the normalised list
 $With = @($script:With)
 if (-not $With) { $With = @() }
 if (-not $TargetConfig) { $TargetConfig = Join-Path $Script:UserHome '.config/opencode' }
 
+# The source tree is resolved first because the interactive menu reports the real
+# agent count, and a count that turns out to be wrong is its own small betrayal.
+$source = Resolve-Source
+$Script:SourceRoot = $source
+
+if ($Interactive) {
+  if (Test-Interactive) {
+    Invoke-InteractiveSetup
+    $selected = @($script:Domains)
+  } else {
+    # `irm ... | iex` and CI runs land here. Prompting would hang or swallow the
+    # next pipeline item, so say why and carry on with the full install.
+    Write-Host ''
+    Write-Info 'Running without a terminal to ask questions on, so installing everything.'
+    Write-Info 'To pick what gets installed, run this from a normal terminal:'
+    Write-Info '  ./install.ps1 --interactive'
+    $selected = @($Script:AllDomains)
+  }
+}
+
+Write-Host ''
+Write-Host '  agent-bootstrap' -ForegroundColor White -NoNewline
+Write-Host '  -  universal AI agent setup' -ForegroundColor DarkGray
+Write-Host '  ------------------------------------------------' -ForegroundColor DarkGray
+
 Write-Info "domains: $($selected -join ', ')"
 if ($With.Count) { Write-Info "project MCPs: $($With -join ', ')" }
 
-$source = Resolve-Source
 Write-Step "Source: $source"
 
 if ($SkipDeps) {
@@ -1100,24 +1287,94 @@ if (-not $SkipMcp) {
 
 $healthy = Invoke-Doctor -Target $TargetConfig
 
+# --------------------------- summary dashboard --------------------
+# Reads the config that was actually written rather than the counts the install
+# steps happened to print. A number that disagrees with the file on disk is
+# exactly the kind of thing a dashboard exists to catch.
+
+$dashAgent = 0; $dashMcp = 0; $dashSubagent = 0; $dashModeProblem = 0; $dashPacks = 0
+if (-not $DryRun) {
+  # A pack is a directory, not a file. Reporting the file count as "packs"
+  # overstated this by roughly 7x, which is the sort of number people notice.
+  $skillDir = Join-Path $TargetConfig 'skills'
+  if (Test-Path $skillDir) { $dashPacks = @(Get-ChildItem $skillDir -Directory -ErrorAction SilentlyContinue).Count }
+  try {
+    $cfgPath = Join-Path $TargetConfig 'opencode.jsonc'
+    $raw = (Get-Content -LiteralPath $cfgPath -Raw) -replace '(?m)^[ \t]*//.*$',''
+    $cfg = $raw | ConvertFrom-Json
+    if ($cfg.PSObject.Properties['agents']) {
+      $dashAgent = @($cfg.agents.PSObject.Properties).Count
+      foreach ($p in $cfg.agents.PSObject.Properties) {
+        $hasMode = $p.Value.PSObject.Properties['mode']
+        if ($hasMode -and $hasMode.Value -eq 'subagent') { $dashSubagent++ }
+        else { $dashModeProblem++ }
+      }
+    }
+    if ($cfg.PSObject.Properties['mcp']) {
+      $sp = $cfg.mcp.PSObject.Properties['servers']
+      if ($sp) { $dashMcp = @($sp.Value.PSObject.Properties).Count }
+    }
+  } catch {
+    Write-Warn2 'could not read back the config for the summary'
+  }
+}
+
 Write-Host ''
 Write-Host '  ------------------------------------------------' -ForegroundColor DarkGray
+Write-Host '  Your setup' -ForegroundColor White
+Write-Host '  ------------------------------------------------' -ForegroundColor DarkGray
+
+$rows = @(
+  @{ label = 'AI agents';        value = if ($DryRun) { "$n (not written - dry run)" } else { "$dashAgent" }
+     ok = ($DryRun -or $dashAgent -gt 0) }
+  @{ label = '  of those, subagents'; value = "$dashSubagent"; ok = ($DryRun -or $dashModeProblem -eq 0) }
+  @{ label = 'MCP servers';      value = if ($DryRun) { 'not written - dry run' } else { "$dashMcp" }; ok = $true }
+  @{ label = 'Slash commands';   value = "$c";  ok = $true }
+  @{ label = 'Skill packs';      value = if ($DryRun) { "$s files (not written - dry run)" } else { "$dashPacks packs, $s files" }; ok = $true }
+  @{ label = 'Helper commands';  value = "$sc scripts in ~/.local/bin"; ok = $true }
+  @{ label = 'Model';            value = $Model; ok = $true }
+)
+foreach ($r in $rows) {
+  $mark = '  OK'
+  $col  = 'Green'
+  if (-not $r.ok) { $col = 'Yellow' }
+  Write-Host "  [$mark] " -NoNewline -ForegroundColor $col
+  # pad to the widest label, or the value runs into the text above it
+  Write-Host ("{0,-24}" -f $r.label) -NoNewline -ForegroundColor DarkGray
+  Write-Host $r.value -ForegroundColor Gray
+}
+
+if (-not $DryRun -and $dashModeProblem -gt 0) {
+  Write-Host ''
+  Write-Warn2 "$dashModeProblem agent(s) are not marked mode=subagent, so they will appear in your Tab / Shift+Tab cycle."
+  Write-Info 'See docs/reference/keyboard-shortcuts.md'
+}
+
+Write-Host ''
 if ($healthy) {
-  Write-Host '  OK 10/10 ready' -ForegroundColor Green
+  Write-Host '  Ready.' -ForegroundColor Green
+  Write-Host '  Open a new terminal, then run:' -ForegroundColor DarkGray
 } else {
-  Write-Host '  ! Installed with warnings - see lines above' -ForegroundColor Yellow
+  Write-Host '  Installed, with warnings above.' -ForegroundColor Yellow
+  Write-Host '  Everything important still works. Run doctor for the full list.' -ForegroundColor DarkGray
 }
 Write-Host ''
-Write-Host '  Next:' -ForegroundColor White
-Write-Host '    opencode                              # start the TUI (tokyonight theme)'
-Write-Host '    doctor                                # re-verify any time (from ~/.local/bin)'
-Write-Host '    /fleet-spawn reviewer 3               # spawn 3 reviewer agents in worktrees'
-Write-Host '    /plan-feature "add OAuth2 login"      # plan a feature across agents'
-Write-Host '    /fleet-status                         # see the fleet'
-Write-Host '    /fleet-collect                        # merge results'
+Write-Host '    opencode' -ForegroundColor White
+Write-Host '        start OpenCode'
+Write-Host ''
+Write-Host '    doctor' -ForegroundColor White
+Write-Host '        check everything is still healthy, any time'
+Write-Host ''
+Write-Host '    /plan-feature "add OAuth2 login"' -ForegroundColor White
+Write-Host '        plan a feature across several agents'
+Write-Host ''
+Write-Host '    /fleet-spawn reviewer 3' -ForegroundColor White
+Write-Host '        run 3 reviewers in parallel, each in its own worktree'
 if ($bak) {
   Write-Host ''
-  Write-Host "  Rollback: restore from $bak" -ForegroundColor DarkGray
+  Write-Host "  Changed your mind? Your previous setup is at:" -ForegroundColor DarkGray
+  Write-Host "    $bak" -ForegroundColor DarkGray
+  Write-Host '    Copy-Item -Recurse -Force "<that folder>\*" "$HOME/.config/opencode\"' -ForegroundColor DarkGray
 }
 Write-Host ''
 

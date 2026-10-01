@@ -443,6 +443,81 @@ Check 'no directory named after a flag exists in the source tree' `
       ($flagDirPollution.Count -eq 0) `
       ("found: " + (@($flagDirPollution | ForEach-Object { $_.Name }) -join ', '))
 
+# ---------------------------------------------------------------- test 10
+# Interactive mode. Driven by stubbing Read-Host with a scripted answer
+# sequence, because a test that needs a human at a keyboard does not run in CI.
+# Every path must land on a sane default: someone who presses Enter twice, types
+# nonsense, or pipes in garbage still gets a working install.
+Write-Suite '10. interactive mode answers land on a sensible default'
+# Stub Read-Host at global scope: Invoke-InteractiveSetup resolves it from there.
+# Must dequeue, so each prompt consumes one scripted answer.
+function global:Read-Host {
+  param([string]$Prompt)
+  if ($script:menuAnswers -and $script:menuAnswers.Count -gt 0) {
+    $v = $script:menuAnswers[0]; $script:menuAnswers.RemoveAt(0); return $v
+  }
+  return ''
+}
+$headText = Get-Content -LiteralPath $installer -Raw
+$headText = $headText.Substring(0, $headText.IndexOf('# --------------------------- main'))
+Invoke-Expression $headText
+# main sets these; the menu reads them directly, so prime them here.
+$Script:SourceRoot = $Source
+$Script:UserHome   = $HOME
+
+function Invoke-Menu {
+  param([string[]]$Answers, [int]$ExpectCount, [string[]]$MustInclude)
+  $script:answers = New-Object System.Collections.Generic.List[string]
+  foreach ($a in $Answers) { $script:answers.Add($a) }
+  # Defined at script scope so Invoke-InteractiveSetup resolves it. Each call
+  # dequeues: a stub that keeps returning answers[0] never advances and every
+  # multi-prompt case silently tests the same thing.
+  $script:menuAnswers = $script:answers
+  $script:Domains = @()
+  $null = Invoke-InteractiveSetup 6>&1
+  $got = @($script:Domains)
+  $bad = @()
+  if ($ExpectCount -and $got.Count -ne $ExpectCount) { $bad += "expected $ExpectCount, got $($got.Count): $($got -join ',')" }
+  foreach ($d in $MustInclude) { if ($got -notcontains $d) { $bad += "missing '$d'" } }
+  return $bad
+}
+
+$domCount = @($Script:AllDomains).Count
+Check 'menu: option 1 installs everything' `
+      (@(Invoke-Menu @('1') $domCount @()).Count -eq 0)
+Check 'menu: bare Enter takes the recommended option' `
+      (@(Invoke-Menu @() $domCount @()).Count -eq 0)
+Check 'menu: option 2 installs just core' `
+      (@(Invoke-Menu @('2') 1 @('core')).Count -eq 0)
+Check 'menu: number picks the right domain' `
+      (@(Invoke-Menu @('3','14') 2 @('research','core')).Count -eq 0)
+Check 'menu: several numbers work' `
+      (@(Invoke-Menu @('3','1 14 15') 3 @('core','research','debugging')).Count -eq 0)
+Check 'menu: commas work' `
+      (@(Invoke-Menu @('3','14,15') 3 @('research','debugging','core')).Count -eq 0)
+Check 'menu: blank at the domain list means everything' `
+      (@(Invoke-Menu @('3','') $domCount @()).Count -eq 0)
+Check 'menu: unrecognised input falls back to everything' `
+      (@(Invoke-Menu @('3','99,abc') $domCount @()).Count -eq 0)
+Check 'menu: out-of-range first choice falls back to everything' `
+      (@(Invoke-Menu @('7') $domCount @()).Count -eq 0)
+Check 'menu: non-numeric first choice falls back to everything' `
+      (@(Invoke-Menu @('yes') $domCount @()).Count -eq 0)
+
+# Regression: `List[string] + 'core'` concatenates onto the LAST ELEMENT in
+# PowerShell 7 instead of appending, which produced a domain named
+# "performancecore" whenever exactly one domain was picked.
+$single = @(Invoke-Menu @('3','15') 2 @('debugging','core'))
+Check 'menu: picking one domain does not fuse it with core' `
+      ($single.Count -eq 0) ("$($single -join '; ')")
+
+# Interactive must never prompt when there is no terminal, or `irm | iex` hangs.
+$menuText = Get-Content -LiteralPath $installer -Raw
+Check 'interactive mode is gated on an interactive terminal' `
+      ($menuText -match 'IsInputRedirected')
+Check 'non-interactive runs are not prompted' `
+      ($menuText -match 'Running without a terminal to ask questions on')
+
 # ---------------------------------------------------------------- summary
 Write-Host ''
 Write-Host '  ----------------------------------------------------' -ForegroundColor DarkGray

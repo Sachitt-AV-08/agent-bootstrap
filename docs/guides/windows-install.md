@@ -6,20 +6,64 @@
 - PowerShell 7+ (`pwsh`)
 - Administrator privileges (recommended)
 
+The one-liner below installs PowerShell's prerequisites for you, but you need
+PowerShell 7 itself already. If `pwsh` is not found, install it first:
+
+```powershell
+winget install Microsoft.PowerShell
+```
+
+Then close the terminal, open a new one, and confirm `pwsh --version` reports 7
+or higher.
+
 ## Quick Install
 
 ```powershell
-# Run from PowerShell 7+
-irm https://raw.githubusercontent.com/<your-repo>/agent-bootstrap/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/Sachitt-AV-08/agent-bootstrap/main/install.ps1 | iex
+```
+
+To be asked what to install instead of getting everything:
+
+```powershell
+irm https://raw.githubusercontent.com/Sachitt-AV-08/agent-bootstrap/main/install.ps1 | iex -args --interactive
+```
+
+Preview without changing anything:
+
+```powershell
+irm https://raw.githubusercontent.com/Sachitt-AV-08/agent-bootstrap/main/install.ps1 | iex -args --dry-run
 ```
 
 Or clone and run locally:
 
 ```powershell
-git clone https://github.com/<your-repo>/agent-bootstrap.git
+git clone https://github.com/Sachitt-AV-08/agent-bootstrap.git
 cd agent-bootstrap
-.\install.ps1
+.\install.ps1 --interactive
 ```
+
+## "running scripts is disabled on this system"
+
+This is PowerShell's execution policy blocking `.\install.ps1`, and it is the
+single most common reason a first run fails on Windows. It affects running the
+file directly — it does **not** affect the `irm ... | iex` one-liner, because
+that pipes text rather than loading a script file. If you hit it, either use the
+one-liner, or bypass it for that one command:
+
+```powershell
+pwsh -ExecutionPolicy Bypass -File .\install.ps1
+```
+
+`Bypass` here applies only to that process. It does not change any setting on
+your machine. If you would rather change the policy for your user account:
+
+```powershell
+Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+```
+
+`RemoteSigned` allows local scripts you wrote and blocks downloaded unsigned ones,
+which is the sensible default on a development machine. You can see the current
+settings with `Get-ExecutionPolicy -List`.
 
 ## What Gets Installed
 
