@@ -552,6 +552,35 @@ foreach ($idx in @('docs/guides/index.md','docs/reference/index.md')) {
          ((Get-Content -LiteralPath $p -Raw) -notmatch '\]\(guides/'))
 }
 
+# ---------------------------------------------------------------- test 12
+# An install that produced zero agents used to print "Ready." and exit 0. That is
+# the worst possible outcome: the user believes it worked, then starts OpenCode
+# to find nothing in it. A zero-agent install must fail loudly and must not
+# suggest running `opencode`.
+Write-Suite '12. a zero-agent install fails instead of claiming success'
+$hc = Get-Content -LiteralPath $installer -Raw
+Check 'zero agents is an error, not a warning' `
+      ($hc -match "Write-Err2 'no agents or commands installed'")
+Check 'zero skill packs is an error too' `
+      ($hc -match "Write-Err2 'no skill packs installed'")
+# Single-quoted: a double-quoted pattern would interpolate $mark/$col here.
+Check 'dashboard marks failing rows FAIL, not OK' `
+      ($hc -match '\$\s*mark\s*=\s*''\s*FAIL''')
+Check 'dashboard mark is derived from status, not hardcoded' `
+      ($hc -notmatch '\$mark\s*=\s*''\s*OK''[\r\n]+\s*\$col')
+Check 'a failed install does not tell you to run opencode' `
+      ($hc -match 'if \(-not \$installFailed\)')
+Check 'a failed install explains what to do' `
+      ($hc -match 'This did not install correctly')
+
+# --force must replace a checkout, not clone into a populated directory
+Check '--force removes the existing checkout' `
+      ($hc -match 'Remove-Item -Recurse -Force \$target')
+Check 'clone failures are reported, not swallowed' `
+      ($hc -match 'E_CLONE_FAILED')
+Check 'git output is captured before being discarded' `
+      ($hc -match 'gitOut = & git clone')
+
 # ---------------------------------------------------------------- summary
 Write-Host ''
 Write-Host '  ----------------------------------------------------' -ForegroundColor DarkGray

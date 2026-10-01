@@ -636,13 +636,45 @@ function Resolve-Source {
   if ((Split-Path -Leaf $here) -eq 'scripts') { $here = Split-Path -Parent $here }
   if (Test-Path (Join-Path $here 'config/opencode.jsonc')) { return $here }
 
-  # otherwise clone
   $target = if ($InstallDir) { $InstallDir } else { Join-Path $Script:UserHome ".local/share/$($Script:RepoName)" }
-  if ((Test-Path (Join-Path $target 'config/opencode.jsonc')) -and -not $Force) { return $target }
+  $hasRepo = Test-Path (Join-Path $target 'config/opencode.jsonc')
+
+  if ($hasRepo -and $Force) {
+    # `git clone` into a populated directory fails, and piping that to Out-Null
+    # hid it, so --force returned a path with no config and the run died later
+    # with a misleading "template not found". Replace the tree outright instead.
+    Write-Info "--force: replacing the existing checkout at $target"
+    if (-not $DryRun) {
+      try {
+        Remove-Item -Recurse -Force $target -ErrorAction Stop
+        $hasRepo = $false
+      } catch {
+        Stop-Install -Code 'E_PERMISSION_DENIED' `
+          -What "Could not remove the existing checkout at $target" `
+          -Impact 'Nothing was changed.' `
+          -Fix "Close anything using that folder, or install somewhere else:`n           --install-dir $env:TEMP\agent-bootstrap-fresh"
+      }
+    }
+  }
+
+  if ($hasRepo) { return $target }
+
   Write-Info "cloning agent-bootstrap -> $target"
   if (-not $DryRun) {
     New-Item -ItemType Directory -Force (Split-Path -Parent $target) | Out-Null
-    & git clone --depth 1 https://github.com/Sachitt-AV-08/agent-bootstrap.git $target 2>&1 | Out-Null
+    # Capture git's output: "fatal: destination path already exists" is the only
+    # clue when a clone fails, and it was being discarded.
+    $gitOut = & git clone --depth 1 https://github.com/Sachitt-AV-08/agent-bootstrap.git $target 2>&1 | Out-String
+    if ($LASTEXITCODE -ne 0) {
+      $reason = if ($gitOut -match 'already exists') { 'the folder already exists and is not empty' }
+                elseif ($gitOut -match 'not found|Could not resolve') { 'no network connection' }
+                elseif ($gitOut -match 'Permission denied') { 'no write permission for that location' }
+                else { 'git reported an error' }
+      Stop-Install -Code 'E_CLONE_FAILED' `
+        -What "Could not download agent-bootstrap: $reason." `
+        -Impact 'Nothing was installed.' `
+        -Fix "git said:`n           $(($gitOut -split "`r?`n" | Where-Object { $_ -match '\S' } | Select-Object -Last 3) -join "`n           ")`n           Or clone it yourself and run the installer from that folder:`n           git clone https://github.com/Sachitt-AV-08/agent-bootstrap.git`n           Or pick a writable location:`n           --install-dir <dir>"
+    }
   }
   return $target
 }
@@ -981,13 +1013,19 @@ function Invoke-Doctor {
     if (Test-Path $p) { $fileCount += (Get-ChildItem $p -Recurse -File).Count }
   }
   if ($fileCount -gt 0) { Write-Ok "$fileCount agent/command files installed" }
-  elseif (-not $DryRun) { Write-Warn2 'no agents or commands installed' }
+  elseif (-not $DryRun) {
+    # Not a warning. An install that produced no agents and no commands has
+    # installed nothing useful, and reporting it as "Ready" is the one outcome
+    # worse than an outright failure: the user walks away believing it worked.
+    Write-Err2 'no agents or commands installed'
+    $ok = $false
+  }
 
   $skillCount = 0
   $sp = Join-Path $Target 'skills'
   if (Test-Path $sp) { $skillCount = (Get-ChildItem $sp -Directory).Count }
   if ($skillCount -gt 0) { Write-Ok "$skillCount skill packs installed" }
-  elseif (-not $DryRun) { Write-Warn2 'no skill packs installed' }
+  elseif (-not $DryRun) { Write-Err2 'no skill packs installed'; $ok = $false }
 
   if (Test-Cmd 'ffmpeg') { Write-Ok 'ffmpeg available' } else { Write-Warn2 'ffmpeg not found (needed for content/video)' }
 
@@ -1293,6 +1331,7 @@ $healthy = Invoke-Doctor -Target $TargetConfig
 # exactly the kind of thing a dashboard exists to catch.
 
 $dashAgent = 0; $dashMcp = 0; $dashSubagent = 0; $dashModeProblem = 0; $dashPacks = 0
+$installFailed = $false
 if (-not $DryRun) {
   # A pack is a directory, not a file. Reporting the file count as "packs"
   # overstated this by roughly 7x, which is the sort of number people notice.
@@ -1327,17 +1366,20 @@ Write-Host '  ------------------------------------------------' -ForegroundColor
 $rows = @(
   @{ label = 'AI agents';        value = if ($DryRun) { "$n (not written - dry run)" } else { "$dashAgent" }
      ok = ($DryRun -or $dashAgent -gt 0) }
-  @{ label = '  of those, subagents'; value = "$dashSubagent"; ok = ($DryRun -or $dashModeProblem -eq 0) }
+  @{ label = '  of those, subagents'; value = if ($DryRun) { 'not checked - dry run' } else { "$dashSubagent" }
+     ok = ($DryRun -or ($dashAgent -gt 0 -and $dashModeProblem -eq 0)) }
   @{ label = 'MCP servers';      value = if ($DryRun) { 'not written - dry run' } else { "$dashMcp" }; ok = $true }
-  @{ label = 'Slash commands';   value = "$c";  ok = $true }
-  @{ label = 'Skill packs';      value = if ($DryRun) { "$s files (not written - dry run)" } else { "$dashPacks packs, $s files" }; ok = $true }
+  @{ label = 'Slash commands';   value = "$c";  ok = ($DryRun -or $c -gt 0) }
+  @{ label = 'Skill packs';      value = if ($DryRun) { "$s files (not written - dry run)" } else { "$dashPacks packs, $s files" }
+     ok = ($DryRun -or $dashPacks -gt 0) }
   @{ label = 'Helper commands';  value = "$sc scripts in ~/.local/bin"; ok = $true }
   @{ label = 'Model';            value = $Model; ok = $true }
 )
 foreach ($r in $rows) {
-  $mark = '  OK'
-  $col  = 'Green'
-  if (-not $r.ok) { $col = 'Yellow' }
+  # The mark must reflect the status, not just the colour: a row that says "OK"
+  # while the value is 0 is worse than no dashboard at all.
+  if ($r.ok)      { $mark = '  OK'; $col = 'Green' }
+  else            { $mark = ' FAIL'; $col = 'Red' }
   Write-Host "  [$mark] " -NoNewline -ForegroundColor $col
   # pad to the widest label, or the value runs into the text above it
   Write-Host ("{0,-24}" -f $r.label) -NoNewline -ForegroundColor DarkGray
@@ -1354,22 +1396,43 @@ Write-Host ''
 if ($healthy) {
   Write-Host '  Ready.' -ForegroundColor Green
   Write-Host '  Open a new terminal, then run:' -ForegroundColor DarkGray
+} elseif (-not $DryRun -and $dashAgent -eq 0) {
+  # The one case that is not "installed with warnings": nothing usable landed.
+  Write-Host '  This did not install correctly.' -ForegroundColor Red
+  Write-Host '  No agents were written, so OpenCode would start with nothing in it.' -ForegroundColor DarkGray
+  Write-Host ''
+  Write-Host '  Most likely cause: the source checkout is incomplete or in the' -ForegroundColor DarkGray
+  Write-Host '  wrong place, so there were no agent definitions to copy.' -ForegroundColor DarkGray
+  Write-Host ''
+  Write-Host '  Try again from a fresh clone:' -ForegroundColor White
+  Write-Host '    git clone https://github.com/Sachitt-AV-08/agent-bootstrap.git' -ForegroundColor Gray
+  Write-Host '    cd agent-bootstrap' -ForegroundColor Gray
+  Write-Host '    ./install.ps1 --force' -ForegroundColor Gray
+  Write-Host ''
+  Write-Host '  Or see docs/guides/troubleshooting.md' -ForegroundColor DarkGray
+  $installFailed = $true
 } else {
   Write-Host '  Installed, with warnings above.' -ForegroundColor Yellow
   Write-Host '  Everything important still works. Run doctor for the full list.' -ForegroundColor DarkGray
 }
-Write-Host ''
-Write-Host '    opencode' -ForegroundColor White
-Write-Host '        start OpenCode'
-Write-Host ''
-Write-Host '    doctor' -ForegroundColor White
-Write-Host '        check everything is still healthy, any time'
-Write-Host ''
-Write-Host '    /plan-feature "add OAuth2 login"' -ForegroundColor White
-Write-Host '        plan a feature across several agents'
-Write-Host ''
-Write-Host '    /fleet-spawn reviewer 3' -ForegroundColor White
-Write-Host '        run 3 reviewers in parallel, each in its own worktree'
+
+# Only suggest next steps when there is a working setup to use them with.
+# Telling someone to run `opencode` after an install that produced no agents is
+# an instruction to go and be disappointed.
+if (-not $installFailed) {
+  Write-Host ''
+  Write-Host '    opencode' -ForegroundColor White
+  Write-Host '        start OpenCode'
+  Write-Host ''
+  Write-Host '    doctor' -ForegroundColor White
+  Write-Host '        check everything is still healthy, any time'
+  Write-Host ''
+  Write-Host '    /plan-feature "add OAuth2 login"' -ForegroundColor White
+  Write-Host '        plan a feature across several agents'
+  Write-Host ''
+  Write-Host '    /fleet-spawn reviewer 3' -ForegroundColor White
+  Write-Host '        run 3 reviewers in parallel, each in its own worktree'
+}
 if ($bak) {
   Write-Host ''
   Write-Host "  Changed your mind? Your previous setup is at:" -ForegroundColor DarkGray
