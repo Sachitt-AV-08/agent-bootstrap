@@ -581,6 +581,80 @@ Check 'clone failures are reported, not swallowed' `
 Check 'git output is captured before being discarded' `
       ($hc -match 'gitOut = & git clone')
 
+# ---------------------------------------------------------------- test 13
+# The documented one-liner is `irm .../install.ps1 | iex`. That path leaves
+# $PSCommandPath empty, and Resolve-Source used to call Split-Path on it, so the
+# single most important entry point in the project died instantly with
+# "Cannot bind argument to parameter 'Path'" and installed nothing. Execute the
+# installer exactly the way the one-liner does, with every file write pointed at
+# a throwaway directory.
+Write-Suite '13. the irm|iex one-liner path actually installs'
+$iexSource = Join-Path $Source 'install.ps1'
+$iexTarget = Join-Path $Root 'iextarget'
+$iexInstallDir = Join-Path $Root 'iexsource'
+New-Item -ItemType Directory -Force $iexTarget, $iexInstallDir | Out-Null
+# prime a source tree so the iex run has real agent files to install from
+Copy-Item (Join-Path $Source 'agents') $iexInstallDir -Recurse -Force
+Copy-Item (Join-Path $Source 'commands') $iexInstallDir -Recurse -Force
+Copy-Item (Join-Path $Source 'skills') $iexInstallDir -Recurse -Force
+New-Item -ItemType Directory -Force (Join-Path $iexInstallDir 'config') | Out-Null
+Copy-Item (Join-Path $Source 'config/opencode.jsonc') (Join-Path $iexInstallDir 'config/opencode.jsonc') -Force
+
+$iexScript = @"
+`$ErrorActionPreference = 'Stop'
+`$raw = Get-Content -LiteralPath '$iexSource' -Raw
+# strip the `#Requires` line: it is only honoured for script *files*, and
+# keeping it would make this look like a real file run rather than an iex
+`$raw = (`$raw -split "`r?`n" | Where-Object { `$_ -notmatch '^#Requires' }) -join "`n"
+# Invoke-Expression runs in the CALLER's scope, so `$args` there is this
+# script's (empty) args and the installer would install to the real
+# ~/.config/opencode. Invoking a scriptblock with arguments populates `$args`
+# inside it, which is what makes this a faithful test of the one-liner.
+`$sb = [scriptblock]::Create(`$raw)
+& `$sb '--target-config' '$iexTarget' '--install-dir' '$iexInstallDir' '--skip-deps' '--skip-mcp'
+"@
+$iexPath = Join-Path $Root 'iex-run.ps1'
+Set-Content -LiteralPath $iexPath -Value $iexScript -Encoding UTF8
+# The installer backs up before it writes, so a new backup under the real config
+# directory is proof it wrote there. Counting before and after is the only way to
+# assert isolation without trusting the parsed output.
+$realBackupsBefore = @(Get-ChildItem (Join-Path $HOME '.config') -Directory -Filter 'opencode-backup-*' -ErrorAction SilentlyContinue).Count
+$iexOut = & pwsh -NoProfile -File $iexPath 6>&1 2>&1
+$realBackupsAfter = @(Get-ChildItem (Join-Path $HOME '.config') -Directory -Filter 'opencode-backup-*' -ErrorAction SilentlyContinue).Count
+$iexText = $iexOut | Out-String
+Check 'one-liner path does not fail on an empty $PSCommandPath' `
+      ($iexText -notmatch "Cannot bind argument to parameter 'Path'") `
+      ($iexText -split "`r?`n" | Where-Object { $_ -match "Cannot bind" } | Select-Object -First 1)
+Check 'one-liner path actually installs agents' `
+      ($iexText -match 'agent definitions merged into config')
+Check 'one-liner path reports the agent count' `
+      ($iexText -match 'AI agents\s+\d+')
+# The flags themselves were the subtle part. Under iex the scriptblock's
+# top-level locals shadow the script scope, so every flag read back as its
+# default: `iex -args --minimal` installed all 20 domains, and --target-config
+# was ignored, so an earlier version of this very test wrote to the user's real
+# ~/.config/opencode. Prove isolation by checking the real config directory did
+# not gain a backup - the installer makes one before writing anything.
+Check 'iex honours --skip-deps' `
+      ($iexText -match 'Dependencies skipped')
+Check 'iex honours --install-dir' `
+      ($iexText -match [regex]::Escape('iexsource'))
+Check 'iex wrote to the temp target, not the real config' `
+      ($realBackupsAfter -eq $realBackupsBefore) `
+      "real config backups went $realBackupsBefore -> $realBackupsAfter"
+$iexCfg = Join-Path $iexTarget 'opencode.jsonc'
+if (Test-Path $iexCfg) {
+  try {
+    $iexParsed = ((Get-Content $iexCfg -Raw) -replace '(?m)^[ \t]*//.*$','') | ConvertFrom-Json
+    $iexAgents = @($iexParsed.agents.PSObject.Properties).Count
+    Check 'one-liner wrote a valid config with agents' ($iexAgents -gt 0) "count=$iexAgents"
+  } catch {
+    Check 'one-liner wrote a valid config with agents' $false $_.Exception.Message
+  }
+} else {
+  Check 'one-liner wrote a valid config with agents' $false "no config at $iexCfg"
+}
+
 # ---------------------------------------------------------------- summary
 Write-Host ''
 Write-Host '  ----------------------------------------------------' -ForegroundColor DarkGray

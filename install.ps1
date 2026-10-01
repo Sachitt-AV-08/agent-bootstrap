@@ -58,18 +58,37 @@ Set-StrictMode -Version Latest
 # all of which produce a config that is subtly wrong instead of an error.
 # A hand-rolled parser sees exactly what the user typed. Both `-flag` and
 # `--flag` spellings are accepted, as is `-Flag` (PowerShell's own convention).
-$All          = $false
-$Minimal      = $false
-$SkipDeps     = $false
-$SkipMcp      = $false
-$Force        = $false
-$DryRun       = $false
-$SelfTest     = $false
-$Interactive  = $false
-$InstallDir   = ""
-$TargetConfig = ""
-$Model        = "kilo/kilo-auto/free"
-$SmallModel   = "kilo/kilo-auto/small"
+# Flag defaults are declared in BOTH the local and the script scope.
+#
+# In a script file the two are the same variable. Under `irm ... | iex` the body
+# runs as an unbound scriptblock, where a bare `$Minimal = $false` creates a
+# scriptblock-LOCAL that shadows the script scope - so the parser could set
+# `$script:Minimal` and the rest of the script would still read $false. Reading
+# `$script:Minimal` also threw under StrictMode, because only the local existed.
+$flagDefaults = [ordered]@{
+  All          = $false
+  Minimal      = $false
+  SkipDeps     = $false
+  SkipMcp      = $false
+  Force        = $false
+  DryRun       = $false
+  SelfTest     = $false
+  Interactive  = $false
+  InstallDir   = ""
+  TargetConfig = ""
+  Model        = "kilo/kilo-auto/free"
+  SmallModel   = "kilo/kilo-auto/small"
+}
+# Parsed flags live in this ONE hashtable rather than in individually-scoped
+# variables. A hashtable is a single value, so there is no per-variable scope
+# to get wrong: under `irm | iex` the scriptblock's top-level locals shadow the
+# script scope, which silently reset every flag to its default.
+$script:Opts = @{}
+foreach ($kv in $flagDefaults.GetEnumerator()) {
+  $script:Opts[$kv.Key] = $kv.Value
+  # keep the top-level locals in step for code that runs before the parser
+  Set-Variable -Name $kv.Key -Value $kv.Value
+}
 
 # `$args` is function-scoped in PowerShell, so inside a helper it refers to
 # that helper's own arguments, not the script's. Capture the script's arguments
@@ -84,12 +103,16 @@ $script:With    = @()
 $script:BuPython         = $null
 $script:BuPythonResolved = $false
 $script:SourceRoot       = ''
+# Set when --self-test is dispatched, so the self-test branch can resolve the
+# source tree without recursing back into itself.
+$SelfTestOnly            = $false
 
 # --------------------------- constants ---------------------------
 
 $Script:RepoName    = 'agent-bootstrap'
 $Script:UserHome    = $HOME
-$script:Help        = $false
+# NOTE: --help is tracked as $script:Opts.Help, not as a variable here. Reading
+# a plain $script:Help missed the parser's write and made --help a no-op.
 
 $Script:Usage = @'
   agent-bootstrap - one command to a full AI agent environment
@@ -261,6 +284,15 @@ function Write-Usage {
   Write-Host ''
 }
 
+function Set-FlagValue {
+  # The parser writes every flag into the single $script:Opts hashtable, which
+  # main then unpacks into top-level locals. Doing it per-variable was the bug:
+  # under `irm | iex` the scriptblock's top-level locals shadow the script
+  # scope, so `iex -args --minimal` installed all 20 domains instead of core.
+  param([string]$Name, $Value)
+  $script:Opts[$Name] = $Value
+}
+
 function Get-FlagKey([string]$name) {
   # One canonical key per flag, so every spelling a user might type collapses to
   # the same lookup: --skip-deps, -SkipDeps, --skipdeps and /SKIP_DEPS are all
@@ -303,7 +335,7 @@ function Resolve-Selection {
   $with     = New-Object System.Collections.Generic.List[string]
   $expect   = $null
   $expectName = $null
-  $Help     = $false
+  $Help = $false   # parser-local, folded into Opts at the end
 
   $raw = $Script:RawArgs
   for ($i = 0; $i -lt $raw.Count; $i++) {
@@ -315,7 +347,7 @@ function Resolve-Selection {
       $targets = $expect
       if ($targets -eq 'Domains') { foreach ($p in ($tok -split ',')) { if ($p.Trim()) { $domains.Add($p.Trim()) } } }
       elseif ($targets -eq 'With') { foreach ($p in ($tok -split ',')) { if ($p.Trim()) { $with.Add($p.Trim()) } } }
-      else { Set-Variable -Name $targets -Value $tok -Scope Script; $expect = $null }
+      else { Set-FlagValue -Name $targets -Value $tok; $expect = $null }
       # List-valued flags stay greedy so `--with orvima parley` works as well
       # as `--with orvima,parley`; scalar flags take exactly one value.
       if ($expect -ne $null) {
@@ -330,12 +362,12 @@ function Resolve-Selection {
     if ($tok -match '^--?([^=/]+)=(.*)$') {
       $name = Get-FlagKey $Matches[1]; $val = $Matches[2]
       if ($switches.ContainsKey($name)) {
-        if ($switches[$name] -eq 'Help') { $Help = $true } else { Set-Variable -Name $switches[$name] -Value $true -Scope Script }
+        if ($switches[$name] -eq 'Help') { $Help = $true } else { Set-FlagValue -Name $switches[$name] -Value $true }
       } elseif ($valued.ContainsKey($name)) {
         $targets = $valued[$name]
         if ($targets -eq 'Domains') { foreach ($p in ($val -split ',')) { if ($p.Trim()) { $domains.Add($p.Trim()) } } }
         elseif ($targets -eq 'With') { foreach ($p in ($val -split ',')) { if ($p.Trim()) { $with.Add($p.Trim()) } } }
-        else { Set-Variable -Name $targets -Value $val -Scope Script }
+        else { Set-FlagValue -Name $targets -Value $val }
       } else {
         Stop-Install -Code 'E_UNKNOWN_FLAG' `
           -What "'$tok' is not a flag this installer knows." `
@@ -349,7 +381,7 @@ function Resolve-Selection {
     if ($tok -match '^--?(.+)$') {
       $name = Get-FlagKey $Matches[1]
       if ($switches.ContainsKey($name)) {
-        if ($switches[$name] -eq 'Help') { $Help = $true } else { Set-Variable -Name $switches[$name] -Value $true -Scope Script }
+        if ($switches[$name] -eq 'Help') { $Help = $true } else { Set-FlagValue -Name $switches[$name] -Value $true }
       } elseif ($valued.ContainsKey($name)) {
         $expect = $valued[$name]
         $expectName = $name
@@ -377,10 +409,13 @@ function Resolve-Selection {
 
   $script:Domains = @($domains | Select-Object -Unique)
   $script:With    = @($with    | Select-Object -Unique)
-  $script:Help    = $Help
+  $script:Opts['Help'] = $Help
   $Domains        = $script:Domains
 
-  if ($Minimal) {
+  # Read switches from $script:Opts, not as plain locals: under `irm | iex` the
+  # top-level `$Minimal = $false` is a scriptblock-local that shadows anything
+  # the parser wrote to the script scope, so a plain read ignores --minimal.
+  if ($script:Opts.Minimal) {
     if ($Domains.Count) {
       Stop-Install -Code 'E_CONFLICTING_FLAGS' `
         -What 'You asked for --minimal and --domains at the same time.' `
@@ -414,6 +449,9 @@ function Install-SystemDeps {
 
   $needed = @()
   foreach ($d in $Domains) {
+    # guard the lookup: an unknown domain yields $null, and relying on
+    # foreach-over-null to be a no-op is a subtlety nobody should have to hold
+    if (-not $Script:SystemDeps.ContainsKey($d)) { continue }
     foreach ($s in $Script:SystemDeps[$d]) {
       if ($s -eq 'ffmpeg' -and -not (Test-Cmd 'ffmpeg')) { $needed += 'ffmpeg' }
     }
@@ -422,7 +460,7 @@ function Install-SystemDeps {
 
   if ($IsWindows) {
     if (Test-Cmd 'winget') {
-      foreach ($s in ($needed | Select-Object -Unique)) {
+      foreach ($s in @($needed | Select-Object -Unique)) {
         Write-Info "winget install $s"
         if (-not $DryRun) {
           winget install --id "Gyan.FFmpeg" --exact --accept-source-agreements `
@@ -435,28 +473,28 @@ function Install-SystemDeps {
       if (Test-Cmd 'ffmpeg') { Write-Ok 'ffmpeg installed' } else { Write-Warn2 'ffmpeg not on PATH yet - restart the shell' }
     }
     elseif (Test-Cmd 'choco') {
-      foreach ($s in ($needed | Select-Object -Unique)) { if (-not $DryRun) { choco install $s -y | Out-Null } }
+      foreach ($s in @($needed | Select-Object -Unique)) { if (-not $DryRun) { choco install $s -y | Out-Null } }
       Write-Ok 'ffmpeg installed via chocolatey'
     }
     else { Write-Warn2 'Install ffmpeg manually: https://ffmpeg.org/download.html' }
   }
   elseif (Test-Cmd 'brew') {
-    foreach ($s in ($needed | Select-Object -Unique)) { if (-not $DryRun) { brew install $s | Out-Null } }
+    foreach ($s in @($needed | Select-Object -Unique)) { if (-not $DryRun) { brew install $s | Out-Null } }
     Write-Ok 'ffmpeg installed via homebrew'
   }
   elseif (Test-Cmd 'apt-get') {
     # apt needs an explicit update or it installs a stale index and reports the
     # package as unavailable, which reads as "install failed"
     if (-not $DryRun) { sudo apt-get update -qq 2>&1 | Out-Null }
-    foreach ($s in ($needed | Select-Object -Unique)) { if (-not $DryRun) { sudo apt-get install -y $s 2>&1 | Out-Null } }
+    foreach ($s in @($needed | Select-Object -Unique)) { if (-not $DryRun) { sudo apt-get install -y $s 2>&1 | Out-Null } }
     Write-Ok 'ffmpeg installed via apt'
   }
   elseif (Test-Cmd 'dnf') {
-    foreach ($s in ($needed | Select-Object -Unique)) { if (-not $DryRun) { sudo dnf install -y $s 2>&1 | Out-Null } }
+    foreach ($s in @($needed | Select-Object -Unique)) { if (-not $DryRun) { sudo dnf install -y $s 2>&1 | Out-Null } }
     Write-Ok 'ffmpeg installed via dnf'
   }
   elseif (Test-Cmd 'pacman') {
-    foreach ($s in ($needed | Select-Object -Unique)) { if (-not $DryRun) { sudo pacman -S --noconfirm $s 2>&1 | Out-Null } }
+    foreach ($s in @($needed | Select-Object -Unique)) { if (-not $DryRun) { sudo pacman -S --noconfirm $s 2>&1 | Out-Null } }
     Write-Ok 'ffmpeg installed via pacman'
   }
   else {
@@ -552,7 +590,11 @@ function Install-PythonDeps {
   foreach ($d in $Domains) {
     if ($Script:PyDeps.ContainsKey($d)) { $pkgs += $Script:PyDeps[$d] }
   }
-  $pkgs = $pkgs | Select-Object -Unique
+  # `@() | Select-Object -Unique` returns $null, not an empty array, and
+  # $null.Count throws under StrictMode. `--minimal` selects only 'core', which
+  # has no Python deps, so this was the exact path that crashed the single most
+  # commonly advertised flag. Wrapping in @() keeps it an array either way.
+  $pkgs = @($pkgs | Select-Object -Unique)
   if ($pkgs.Count -eq 0) { Write-Ok 'No Python dependencies required'; return }
 
   $py = $null
@@ -631,10 +673,20 @@ function Install-Playwright {
 # --------------------------- 2. source checkout -------------------
 
 function Resolve-Source {
-  # Use the directory this script lives in, so a git clone works offline.
-  $here = Split-Path -Parent $PSCommandPath
-  if ((Split-Path -Leaf $here) -eq 'scripts') { $here = Split-Path -Parent $here }
-  if (Test-Path (Join-Path $here 'config/opencode.jsonc')) { return $here }
+  # Prefer the directory this script lives in, so a clone works offline.
+  # $PSCommandPath is EMPTY when the script arrives via `irm ... | iex`, which
+  # is the documented one-liner. Split-Path on an empty string throws, and that
+  # killed the single most important entry point in the project: the one-command
+  # install produced "Cannot bind argument to parameter 'Path'" and installed
+  # nothing. Guard it and fall through to cloning.
+  $here = $null
+  if ($PSCommandPath) {
+    $here = Split-Path -Parent $PSCommandPath
+    if ((Split-Path -Leaf $here) -eq 'scripts') { $here = Split-Path -Parent $here }
+    if (Test-Path (Join-Path $here 'config/opencode.jsonc')) { return $here }
+  } else {
+    Write-Info 'Running from a download, so fetching the agent files.'
+  }
 
   $target = if ($InstallDir) { $InstallDir } else { Join-Path $Script:UserHome ".local/share/$($Script:RepoName)" }
   $hasRepo = Test-Path (Join-Path $target 'config/opencode.jsonc')
@@ -1217,25 +1269,54 @@ function Invoke-InteractiveSetup {
 
 # --------------------------- main ---------------------------------
 
-# Resolve-Selection parses $args literally; it also sets $script:Help
+# Resolve-Selection parses $args literally into $script:Opts
 $selected = Resolve-Selection
 
-if ($script:Help) { Write-Usage; exit 0 }
+# Unpack the parsed flags into the locals the rest of the script reads.
+#
+# These assignments are deliberately at TOP LEVEL and not in a helper function.
+# An assignment inside a function creates a function-local that disappears when
+# the function returns, so the flags would still read as their defaults. At top
+# level the assignment lands in the scope every later top-level read uses -
+# the script scope in a script file, the scriptblock scope under `irm | iex`.
+$All          = [bool]$script:Opts.All
+$Minimal      = [bool]$script:Opts.Minimal
+$SkipDeps     = [bool]$script:Opts.SkipDeps
+$SkipMcp      = [bool]$script:Opts.SkipMcp
+$Force        = [bool]$script:Opts.Force
+$DryRun       = [bool]$script:Opts.DryRun
+$SelfTest     = [bool]$script:Opts.SelfTest
+$Interactive  = [bool]$script:Opts.Interactive
+$InstallDir   = [string]$script:Opts.InstallDir
+$TargetConfig = [string]$script:Opts.TargetConfig
+$Model        = [string]$script:Opts.Model
+$SmallModel   = [string]$script:Opts.SmallModel
+
+if ($script:Opts.Help) { Write-Usage; exit 0 }
 
 # --self-test: verify the installer's own code paths, install nothing
 if ($SelfTest) {
-  # scripts/ sits next to install.ps1 in a clone; the odd relative path covers
-  # being invoked from ~/.local/share/agent-bootstrap after a one-liner install
-  $candidates = @(
-    (Join-Path $PSCommandPath 'scripts/selftest.ps1'),
-    (Join-Path (Split-Path -Parent $PSCommandPath) 'scripts/selftest.ps1')
-  )
+  $SelfTestOnly = $true
+  # scripts/ sits next to install.ps1 in a clone. When invoked via `irm | iex`
+  # there is no local tree at all, so resolve the source and look there.
+  $candidates = New-Object System.Collections.Generic.List[string]
+  if ($PSCommandPath) {
+    $candidates.Add((Join-Path $PSCommandPath 'scripts/selftest.ps1'))
+    $candidates.Add((Join-Path (Split-Path -Parent $PSCommandPath) 'scripts/selftest.ps1'))
+  }
+  if (-not $SelfTestOnly) {
+    try {
+      $candidates.Add((Join-Path (Resolve-Source) 'scripts/selftest.ps1'))
+    } catch {
+      # no source available; the candidate list above is all we have
+    }
+  }
   $testScript = @($candidates | Where-Object { $_ -and (Test-Path $_) }) | Select-Object -First 1
   if (-not $testScript) {
     Stop-Install -Code 'E_NO_SELFTEST' -ExitCode 2 `
-      -What 'The self-test script (scripts/selftest.ps1) is missing from the source tree.' `
+      -What 'The self-test script (scripts/selftest.ps1) could not be found.' `
       -Impact 'Cannot verify the installer.' `
-      -Fix 'Re-clone the repo, or run the one-liner which downloads a complete copy.'
+      -Fix "Clone the repo and run it from there:`n           git clone https://github.com/Sachitt-AV-08/agent-bootstrap.git`n           cd agent-bootstrap && ./install.ps1 --self-test"
   }
   & pwsh -NoProfile -File $testScript
   exit $LASTEXITCODE
