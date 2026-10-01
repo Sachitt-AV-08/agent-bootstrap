@@ -169,7 +169,11 @@ $Script:AllDomains  = @(
 $Script:PyDeps = @{
   'web-scraping' = @(
     'yt-dlp','youtube-transcript-api','httpx','beautifulsoup4','lxml','selectolax',
-    'trafilatura','newspaper3k','scrapy'
+    'trafilatura','newspaper3k','scrapy',
+    # lxml 5 moved lxml.html.clean into its own distribution. newspaper3k imports
+    # it at module load, so without this `import newspaper` dies with an
+    # ImportError even though every named package is installed and healthy.
+    'lxml_html_clean'
   )
   'social-media' = @('linkedin-api','instagrapi')
   'memory'       = @('chromadb','qdrant-client','mem0ai','faiss-cpu','sqlite-vec')

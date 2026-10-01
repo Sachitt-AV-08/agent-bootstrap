@@ -99,7 +99,7 @@ if (Test-Path $skillDir) {
 
 $agDir = Join-Path $Target 'agents'
 if (Test-Path $agDir) { Ok 'agent-sources' "$((Get-ChildItem $agDir -Recurse -File).Count) file(s)" }
-else { Warn2 'agent-sources' 'not installed (agents are inlined in opencode.jsonc anyway)' }
+else { Ok 'agent-sources' 'inlined in opencode.jsonc (no separate dir needed)' }
 
 foreach ($f in @('tui.json','AGENTS.md')) {
   $p = Join-Path $Target $f
