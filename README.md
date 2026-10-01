@@ -14,12 +14,16 @@ pwsh -c "irm https://raw.githubusercontent.com/Sachitt-AV-08/agent-bootstrap/mai
 curl -fsSL https://raw.githubusercontent.com/Sachitt-AV-08/agent-bootstrap/main/install.sh | bash
 ```
 
-Prefer to be asked? Add `--interactive` and you get three plain-language
-questions instead of a flag list. Press Enter to accept each recommendation.
+Prefer to be asked? You get three plain-language questions instead of a flag
+list. Press Enter to accept each recommendation.
 
 ```powershell
-irm https://raw.githubusercontent.com/Sachitt-AV-08/agent-bootstrap/main/install.ps1 | iex -args --interactive
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/Sachitt-AV-08/agent-bootstrap/main/install.ps1))) --interactive
 ```
+
+The extra wrapping is not decoration: `Invoke-Expression` cannot take arguments,
+so there is no `iex -args`. `& ([scriptblock]::Create(...))` attaches them
+properly. The one-liner above needs no flags, which is why it stays short.
 
 Not sure yet? Preview first — `--dry-run` changes nothing.
 

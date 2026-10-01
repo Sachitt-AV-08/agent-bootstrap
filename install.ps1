@@ -121,6 +121,10 @@ $Script:Usage = @'
     ./install.ps1 [options]     install everything (no flags needed)
     irm https://raw.githubusercontent.com/Sachitt-AV-08/agent-bootstrap/main/install.ps1 | iex
 
+    To pass a flag to the downloaded copy, Invoke-Expression will not do it -
+    there is no `iex -args`. Wrap it instead:
+    & ([scriptblock]::Create((irm https://raw.githubusercontent.com/Sachitt-AV-08/agent-bootstrap/main/install.ps1))) --interactive
+
   WHAT TO INSTALL
     --all                  every domain (this is the default)
     --minimal              core agents and commands only, no Python packages
@@ -287,8 +291,9 @@ function Write-Usage {
 function Set-FlagValue {
   # The parser writes every flag into the single $script:Opts hashtable, which
   # main then unpacks into top-level locals. Doing it per-variable was the bug:
-  # under `irm | iex` the scriptblock's top-level locals shadow the script
-  # scope, so `iex -args --minimal` installed all 20 domains instead of core.
+  # when the body is run as a scriptblock (`& ([scriptblock]::Create(...)) --minimal`,
+  # the only way to pass flags to downloaded text) its top-level locals shadow
+  # the script scope, so --minimal installed all 20 domains instead of core.
   param([string]$Name, $Value)
   $script:Opts[$Name] = $Value
 }

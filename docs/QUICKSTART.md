@@ -15,8 +15,11 @@ curl -fsSL https://raw.githubusercontent.com/Sachitt-AV-08/agent-bootstrap/main/
 Not sure which parts you want? Let it ask you:
 
 ```powershell
-irm https://raw.githubusercontent.com/Sachitt-AV-08/agent-bootstrap/main/install.ps1 | iex -args --interactive
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/Sachitt-AV-08/agent-bootstrap/main/install.ps1))) --interactive
 ```
+
+`Invoke-Expression` has no `-args`, so this line is longer than the one-liner
+above. The one-liner needs no flags, which is why it stays short.
 
 Preview first if you like — this changes nothing:
 

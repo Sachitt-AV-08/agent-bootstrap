@@ -25,14 +25,20 @@ irm https://raw.githubusercontent.com/Sachitt-AV-08/agent-bootstrap/main/install
 To be asked what to install instead of getting everything:
 
 ```powershell
-irm https://raw.githubusercontent.com/Sachitt-AV-08/agent-bootstrap/main/install.ps1 | iex -args --interactive
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/Sachitt-AV-08/agent-bootstrap/main/install.ps1))) --interactive
 ```
 
 Preview without changing anything:
 
 ```powershell
-irm https://raw.githubusercontent.com/Sachitt-AV-08/agent-bootstrap/main/install.ps1 | iex -args --dry-run
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/Sachitt-AV-08/agent-bootstrap/main/install.ps1))) --dry-run
 ```
+
+> **Why the longer form?** `Invoke-Expression` cannot take arguments — there is no
+> `iex -args`, and `irm ... | iex --interactive` silently ignores the flag and
+> installs everything. `& ([scriptblock]::Create(...))` runs the downloaded text
+> with arguments attached, which is why these two lines are shaped differently.
+> The plain `irm ... | iex` above needs no flags, so it stays short.
 
 Or clone and run locally:
 

@@ -629,19 +629,46 @@ Check 'one-liner path actually installs agents' `
       ($iexText -match 'agent definitions merged into config')
 Check 'one-liner path reports the agent count' `
       ($iexText -match 'AI agents\s+\d+')
-# The flags themselves were the subtle part. Under iex the scriptblock's
-# top-level locals shadow the script scope, so every flag read back as its
-# default: `iex -args --minimal` installed all 20 domains, and --target-config
-# was ignored, so an earlier version of this very test wrote to the user's real
-# ~/.config/opencode. Prove isolation by checking the real config directory did
-# not gain a backup - the installer makes one before writing anything.
-Check 'iex honours --skip-deps' `
+# The flags themselves were the subtle part. A scriptblock's top-level locals
+# shadow the script scope, so every flag read back as its default: --minimal
+# installed all 20 domains, and --target-config was ignored, so an earlier
+# version of this very test wrote to the user's real ~/.config/opencode. Prove
+# isolation by checking the real config directory did not gain a backup - the
+# installer makes one before writing anything.
+Check 'scriptblock honours --skip-deps' `
       ($iexText -match 'Dependencies skipped')
-Check 'iex honours --install-dir' `
+Check 'scriptblock honours --install-dir' `
       ($iexText -match [regex]::Escape('iexsource'))
-Check 'iex wrote to the temp target, not the real config' `
+Check 'scriptblock wrote to the temp target, not the real config' `
       ($realBackupsAfter -eq $realBackupsBefore) `
       "real config backups went $realBackupsBefore -> $realBackupsAfter"
+
+# `Invoke-Expression` has no -args parameter. The README, QUICKSTART and the
+# Windows guide all once told users to run `irm ... | iex -args --interactive`,
+# which fails on the first line with "A parameter cannot be found that matches
+# parameter name 'args'" - in the README's own recommended command. Nothing in a
+# PowerShell parse check catches this, because it is only wrong at runtime.
+# Match the broken command SHAPE (`... | iex -args ...`), not the phrase: the
+# docs legitimately explain the trap in prose, and flagging that sentence would
+# be a test that fights its own documentation.
+$badIex = New-Object System.Collections.Generic.List[string]
+foreach ($doc in @('README.md','docs/QUICKSTART.md','docs/guides/windows-install.md')) {
+  $p = Join-Path $Source $doc
+  if (-not (Test-Path $p)) { $badIex.Add("$doc missing"); continue }
+  $hits = @(Select-String -LiteralPath $p -Pattern '\|\s*iex\s+-args')
+  foreach ($h in $hits) { $badIex.Add("$doc`:$($h.LineNumber)") }
+}
+Check 'docs never tell users to run the non-existent `iex -args`' `
+      ($badIex.Count -eq 0) ($badIex -join ', ')
+# ...and the form that does work has to be the one that is documented.
+$hasSbForm = @(
+  foreach ($doc in @('README.md','docs/QUICKSTART.md','docs/guides/windows-install.md')) {
+    if (Test-Path (Join-Path $Source $doc)) {
+      if ((Get-Content -LiteralPath (Join-Path $Source $doc) -Raw) -match '\[scriptblock\]::Create') { $doc }
+    }
+  }
+).Count
+Check 'docs show the scriptblock form for passing flags' ($hasSbForm -eq 3) "found in $hasSbForm of 3"
 $iexCfg = Join-Path $iexTarget 'opencode.jsonc'
 if (Test-Path $iexCfg) {
   try {
