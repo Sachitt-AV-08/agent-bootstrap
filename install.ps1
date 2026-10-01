@@ -4,15 +4,19 @@
   agent-bootstrap installer - takes any machine to a 10/10 AI agent setup.
 
 .DESCRIPTION
-  One command installs OpenCode V2, ~260 agent definitions, fleet orchestration
-  commands, skill packs, and MCP servers (orvima, parley, genesis, context7,
-  browser-use, vision, memory backends). Everything is free-tier and local-first.
+  One command installs OpenCode V2, 163 agent definitions, fleet orchestration
+  commands, skill packs, and MCP servers. Everything is free-tier and local-first.
 
   Install:
     pwsh -c "irm https://raw.githubusercontent.com/Sachitt-AV-08/agent-bootstrap/main/install.ps1 | iex"
 
   Or from a clone:
     ./install.ps1 --all
+
+  Run with no flags to install everything. Your existing configuration is
+  backed up before anything is written, and a rollback path is printed at the
+  end. If a step fails, the installer explains what broke and what to run -
+  it never leaves a half-written config behind.
 
 .PARAMETER All
   Install every domain (default when no selector is given).
@@ -45,29 +49,84 @@
   before anything is written. Rollback instructions are printed at the end.
 #>
 
-[CmdletBinding()]
-param(
-  [switch]$All,
-  [switch]$Minimal,
-  [string[]]$Domains = @(),
-  [string[]]$With = @(),
-  [string]$InstallDir = "",
-  [string]$TargetConfig = "",
-  [string]$Model = "kilo/kilo-auto/free",
-  [string]$SmallModel = "kilo/kilo-auto/small",
-  [switch]$SkipDeps,
-  [switch]$SkipMcp,
-  [switch]$Force,
-  [switch]$DryRun
-)
-
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+
+# Flags are parsed by hand out of $args rather than through a `param()` block.
+# PowerShell's declarative binding rejects `--domains=research,debugging`,
+# splits array tokens across parameters, and drops unrecognised flags silently -
+# all of which produce a config that is subtly wrong instead of an error.
+# A hand-rolled parser sees exactly what the user typed. Both `-flag` and
+# `--flag` spellings are accepted, as is `-Flag` (PowerShell's own convention).
+$All          = $false
+$Minimal      = $false
+$SkipDeps     = $false
+$SkipMcp      = $false
+$Force        = $false
+$DryRun       = $false
+$SelfTest     = $false
+$InstallDir   = ""
+$TargetConfig = ""
+$Model        = "kilo/kilo-auto/free"
+$SmallModel   = "kilo/kilo-auto/small"
+
+# `$args` is function-scoped in PowerShell, so inside a helper it refers to
+# that helper's own arguments, not the script's. Capture the script's arguments
+# once here and have the parser read this instead.
+$Script:RawArgs = @($args)
+$script:Domains = @()
+$script:With    = @()
+
+# Declared up front, not created on first use: Set-StrictMode -Version Latest
+# throws when a variable is read before it has been assigned, and both are
+# caches consulted before anything populates them.
+$script:BuPython         = $null
+$script:BuPythonResolved = $false
 
 # --------------------------- constants ---------------------------
 
 $Script:RepoName    = 'agent-bootstrap'
 $Script:UserHome    = $HOME
+$script:Help        = $false
+
+$Script:Usage = @'
+  agent-bootstrap - one command to a full AI agent environment
+
+  USAGE
+    ./install.ps1 [options]     install everything (no flags needed)
+    irm https://raw.githubusercontent.com/Sachitt-AV-08/agent-bootstrap/main/install.ps1 | iex
+
+  WHAT TO INSTALL
+    --all                  every domain (this is the default)
+    --minimal              core agents and commands only, no Python packages
+    --domains a,b,c        install specific domains
+    --with orvima,parley   also register these project MCP servers
+
+  SAFETY
+    --dry-run              show what would happen, change nothing
+    --skip-deps            do not install system or Python packages
+    --skip-mcp             do not touch MCP server configuration
+    --force                overwrite an existing checkout without asking
+
+  MODELS   (the Kilo gateway is free-tier; paid ids return HTTP 402)
+    --model kilo/kilo-auto/free
+    --small-model kilo/kilo-auto/small
+
+  PATHS
+    --install-dir <dir>    where to keep the agent-bootstrap checkout
+    --target-config <dir>  where to write opencode.jsonc
+
+  OTHER
+    --self-test            verify the installer's own code, install nothing
+    --help                 this message
+
+  EXAMPLES
+    ./install.ps1 --dry-run
+    ./install.ps1 --minimal
+    ./install.ps1 --domains research,debugging
+    ./install.ps1 --all --with orvima,parley,genesis
+'@
+
 $Script:AllDomains  = @(
   'core','security','performance','api','data-ml','frontend','backend-infra',
   'testing','docs-dx','migration','specialty','meta','content','research',
@@ -84,6 +143,35 @@ $Script:PyDeps = @{
   'memory'       = @('chromadb','qdrant-client','mem0ai','faiss-cpu','sqlite-vec')
   'content'      = @('Pillow','imageio-ffmpeg')
   'research'     = @('arxiv','semanticscholar','pandas')
+}
+
+# The PyPI package name is usually not the module you import. Probing for the
+# package name (newspaper3k, qdrant_client, mem0ai) reports a healthy install as
+# missing, which is a false alarm that sends users chasing a problem they do not
+# have. This maps only the names that actually differ; everything else keeps the
+# package name with dashes turned into underscores.
+$Script:PyImportName = @{
+  'newspaper3k'      = 'newspaper'
+  'qdrant-client'    = 'qdrant_client'
+  'mem0ai'           = 'mem0'
+  'faiss-cpu'        = 'faiss'
+  'sqlite-vec'       = 'sqlite_vec'
+  'beautifulsoup4'   = 'bs4'
+  'youtube-transcript-api' = 'youtube_transcript_api'
+  'Pillow'           = 'PIL'
+  'imageio-ffmpeg'   = 'imageio_ffmpeg'
+  'semanticscholar'  = 'semanticscholar'
+  'instagrapi'       = 'instagrapi'
+  'linkedin-api'     = 'linkedin_api'
+  'trafilatura'      = 'trafilatura'
+  'yt-dlp'           = 'yt_dlp'
+  'selectolax'       = 'selectolax'
+  'scrapy'           = 'scrapy'
+  'arxiv'            = 'arxiv'
+  'pandas'           = 'pandas'
+  'lxml'             = 'lxml'
+  'httpx'            = 'httpx'
+  'chromadb'         = 'chromadb'
 }
 $Script:SystemDeps = @{
   'core'          = @()
@@ -109,36 +197,204 @@ function Test-Cmd([string]$name) {
   [bool](Get-Command $name -ErrorAction SilentlyContinue)
 }
 
+# --------------------------- error reporting ----------------------
+
+$Script:DocRoot = 'https://github.com/Sachitt-AV-08/agent-bootstrap/blob/main/docs'
+
+<#
+.SYNOPSIS
+  Abort with an explanation a non-expert can act on.
+.DESCRIPTION
+  Every fatal path in this installer routes through here. A bare
+  `throw "property X cannot be found"` tells a newcomer nothing; each error
+  below states what broke, what it costs them, and the exact command to run.
+  Exit code 1 for user/environment problems, 2 for installer bugs - a
+  non-zero code is what a CI wrapper keys off, so it must never be 0 here.
+#>
+function Stop-Install {
+  param(
+    [Parameter(Mandatory)][string]$Code,
+    [string]$What = '',
+    [string]$Impact = '',
+    [string]$Fix = '',
+    [string]$Doc = "$Script:DocRoot/guides/troubleshooting.md",
+    [int]$ExitCode = 1
+  )
+  Write-Host ''
+  Write-Host '  Something went wrong - nothing was broken by this run.' -ForegroundColor Yellow
+  Write-Host '  ----------------------------------------------------' -ForegroundColor DarkGray
+  Write-Host "  [$Code]" -ForegroundColor Red
+  if ($What)    { Write-Host "  What happened:  $What" }
+  if ($Impact)  { Write-Host "  Why it matters: $Impact" }
+  if ($Fix)     { Write-Host "  What to do:     $Fix" -ForegroundColor Green }
+  if ($Doc)     { Write-Host "  More help:      $Doc" -ForegroundColor DarkGray }
+  Write-Host '  ----------------------------------------------------' -ForegroundColor DarkGray
+  Write-Host '  Your previous configuration is untouched. Nothing was overwritten.' -ForegroundColor DarkGray
+  Write-Host ''
+  exit $ExitCode
+}
+
+function Assert-Node {
+  if (-not (Test-Cmd 'npm')) {
+    $fix = if ($IsWindows) { 'winget install OpenJS.NodeJS.LTS' }
+           elseif (Test-Cmd 'brew') { 'brew install node@20' }
+           else { 'see https://nodejs.org/en/download' }
+    Stop-Install -Code 'E_NO_NODE' `
+      -What 'Node.js 20 or newer was not found on this machine.' `
+      -Impact 'OpenCode is a Node application, so nothing can be installed without it.' `
+      -Fix "Install Node 20+, then open a new terminal and run this again. On Windows: $fix"
+  }
+}
+
 # --------------------------- resolution ---------------------------
 
+function Write-Usage {
+  Write-Host ''
+  Write-Host '  agent-bootstrap' -ForegroundColor White
+  Write-Host '  ------------------------------------------------' -ForegroundColor DarkGray
+  Write-Host $Script:Usage
+  Write-Host ''
+}
+
+function Get-FlagKey([string]$name) {
+  # One canonical key per flag, so every spelling a user might type collapses to
+  # the same lookup: --skip-deps, -SkipDeps, --skipdeps and /SKIP_DEPS are all
+  # the same flag. PowerShell users are used to -PascalCase, and refusing that
+  # would break muscle memory.
+  ($name -replace '[-_]', '').ToLowerInvariant()
+}
+
 function Resolve-Selection {
-  # PowerShell can bind unknown `--flag` tokens into the first string[] parameter.
-  # Reclassify them here: known flags become switches, the rest are real domains.
-  $flagMap = @{
-    '--all'='All'; '--minimal'='Minimal'; '--force'='Force'; '-f'='Force'
-    '--skip-deps'='SkipDeps'; '--skip-mcp'='SkipMcp'; '--dry-run'='DryRun'
+  # $args is parsed literally, so every spelling a user might type resolves to
+  # the same variable.
+  $switches = @{
+    'all'='All'; 'minimal'='Minimal'; 'force'='Force'; 'f'='Force'
+    'skipdeps'='SkipDeps'; 'skipmcp'='SkipMcp'; 'dryrun'='DryRun'
+    'selftest'='SelfTest'; 'help'='Help'; 'h'='Help'; '?'='Help'
   }
-  $tokens = @($Domains) + @($With)
-  $clean = @()
-  foreach ($t in $tokens) {
-    if (-not $t) { continue }
-    foreach ($part in ($t -split ',')) {
-      $p = $part.Trim()
-      if (-not $p) { continue }
-      if ($flagMap.ContainsKey($p)) { Set-Variable -Name $flagMap[$p] -Value $true -Scope Script }
-      elseif ($p.StartsWith('-')) { Write-Warn2 "ignoring unknown flag: $p" }
-      else { $clean += $p }
+  # canonical key -> variable name. The display name and example are kept
+  # separately because the canonical key has no dashes ("targetconfig") and
+  # would be confusing to show a user in an error message.
+  $valued = @{
+    'domains'='Domains'; 'with'='With'; 'model'='Model'; 'smallmodel'='SmallModel'
+    'installdir'='InstallDir'; 'targetconfig'='TargetConfig'
+  }
+  $valuedName = @{
+    'Domains'='--domains'; 'With'='--with'; 'Model'='--model'
+    'SmallModel'='--small-model'; 'InstallDir'='--install-dir'
+    'TargetConfig'='--target-config'
+  }
+  $valuedExample = @{
+    'Domains'   = "$($Script:AllDomains[0]),$($Script:AllDomains[12])"
+    'With'      = 'orvima,parley'
+    'Model'     = 'kilo/kilo-auto/free'
+    'SmallModel'= 'kilo/kilo-auto/small'
+    'InstallDir'= "$HOME/.local/share/agent-bootstrap"
+    'TargetConfig' = "$HOME/.config/opencode"
+  }
+
+  $domains  = New-Object System.Collections.Generic.List[string]
+  $with     = New-Object System.Collections.Generic.List[string]
+  $expect   = $null
+  $expectName = $null
+  $Help     = $false
+
+  $raw = $Script:RawArgs
+  for ($i = 0; $i -lt $raw.Count; $i++) {
+    $tok = [string]$raw[$i]
+    if (-not $tok) { continue }
+
+    # a value the previous flag was waiting for
+    if ($null -ne $expect) {
+      $targets = $expect
+      if ($targets -eq 'Domains') { foreach ($p in ($tok -split ',')) { if ($p.Trim()) { $domains.Add($p.Trim()) } } }
+      elseif ($targets -eq 'With') { foreach ($p in ($tok -split ',')) { if ($p.Trim()) { $with.Add($p.Trim()) } } }
+      else { Set-Variable -Name $targets -Value $tok -Scope Script; $expect = $null }
+      # List-valued flags stay greedy so `--with orvima parley` works as well
+      # as `--with orvima,parley`; scalar flags take exactly one value.
+      if ($expect -ne $null) {
+        $next = if (($i + 1) -lt $raw.Count) { [string]$raw[$i + 1] } else { '' }
+        if (-not $next -or $next.StartsWith('-')) { $expect = $null }
+        else { $i++ }
+      }
+      continue
     }
+
+    # --flag=value
+    if ($tok -match '^--?([^=/]+)=(.*)$') {
+      $name = Get-FlagKey $Matches[1]; $val = $Matches[2]
+      if ($switches.ContainsKey($name)) {
+        if ($switches[$name] -eq 'Help') { $Help = $true } else { Set-Variable -Name $switches[$name] -Value $true -Scope Script }
+      } elseif ($valued.ContainsKey($name)) {
+        $targets = $valued[$name]
+        if ($targets -eq 'Domains') { foreach ($p in ($val -split ',')) { if ($p.Trim()) { $domains.Add($p.Trim()) } } }
+        elseif ($targets -eq 'With') { foreach ($p in ($val -split ',')) { if ($p.Trim()) { $with.Add($p.Trim()) } } }
+        else { Set-Variable -Name $targets -Value $val -Scope Script }
+      } else {
+        Stop-Install -Code 'E_UNKNOWN_FLAG' `
+          -What "'$tok' is not a flag this installer knows." `
+          -Impact 'Nothing was installed.' `
+          -Fix 'Run `./install.ps1 --help` to see every supported flag.'
+      }
+      continue
+    }
+
+    # bare --flag
+    if ($tok -match '^--?(.+)$') {
+      $name = Get-FlagKey $Matches[1]
+      if ($switches.ContainsKey($name)) {
+        if ($switches[$name] -eq 'Help') { $Help = $true } else { Set-Variable -Name $switches[$name] -Value $true -Scope Script }
+      } elseif ($valued.ContainsKey($name)) {
+        $expect = $valued[$name]
+        $expectName = $name
+      } else {
+        Stop-Install -Code 'E_UNKNOWN_FLAG' `
+          -What "'$tok' is not a flag this installer knows." `
+          -Impact 'Nothing was installed.' `
+          -Fix 'Run `./install.ps1 --help` to see every supported flag.'
+      }
+      continue
+    }
+
+    # a bare word is a domain name
+    $domains.Add($tok)
   }
-  $script:Domains = @($clean | Select-Object -Unique)
+
+  if ($null -ne $expect) {
+    $shown = if ($valuedName.ContainsKey($expect)) { $valuedName[$expect] } else { "--$expectName" }
+    $ex    = if ($valuedExample.ContainsKey($expect)) { $valuedExample[$expect] } else { '<value>' }
+    Stop-Install -Code 'E_MISSING_VALUE' `
+      -What "The $shown flag was given without a value after it." `
+      -Impact 'Nothing was installed.' `
+      -Fix "Example: $shown $ex"
+  }
+
+  $script:Domains = @($domains | Select-Object -Unique)
+  $script:With    = @($with    | Select-Object -Unique)
+  $script:Help    = $Help
+  $Domains        = $script:Domains
 
   if ($Minimal) {
-    if ($Domains.Count) { throw "-Minimal and -Domains are mutually exclusive." }
+    if ($Domains.Count) {
+      Stop-Install -Code 'E_CONFLICTING_FLAGS' `
+        -What 'You asked for --minimal and --domains at the same time.' `
+        -Impact 'Minimal means "core only"; listing domains asks for specific extras. These contradict.' `
+        -Fix 'Pick one: either `--minimal`, or `--domains core,research,debugging`.'
+    }
     return @('core')
   }
   if ($Domains.Count) {
-    $unknown = $Domains | Where-Object { $_ -notin $Script:AllDomains }
-    if ($unknown) { throw "Unknown domain(s): $($unknown -join ', '). Valid: $($Script:AllDomains -join ', ')" }
+    $unknown = @($Domains | Where-Object { $_ -notin $Script:AllDomains })
+    if ($unknown.Count) {
+      $close = @($unknown | ForEach-Object {
+        $Script:AllDomains | Where-Object { $_ -like "*$_*" -or $_ -like "*$($_ -replace 's$','')*" } | Select-Object -First 1
+      } | Where-Object { $_ })
+      $hint = if ($close) { " Did you mean: $($close -join ', ')?" } else { '' }
+      Stop-Install -Code 'E_UNKNOWN_DOMAIN' `
+        -What "These are not real domain names: $($unknown -join ', ').$hint" `
+        -Impact 'Nothing was installed.' `
+        -Fix "Valid domains are: $($Script:AllDomains -join ', '). Run with no flags to install everything."
+    }
     # core is always present - the fleet commands depend on it
     return (@('core') + ($Domains | Where-Object { $_ -ne 'core' }) | Select-Object -Unique)
   }
@@ -182,8 +438,23 @@ function Install-SystemDeps {
     foreach ($s in ($needed | Select-Object -Unique)) { if (-not $DryRun) { brew install $s | Out-Null } }
     Write-Ok 'ffmpeg installed via homebrew'
   }
+  elseif (Test-Cmd 'apt-get') {
+    # apt needs an explicit update or it installs a stale index and reports the
+    # package as unavailable, which reads as "install failed"
+    if (-not $DryRun) { sudo apt-get update -qq 2>&1 | Out-Null }
+    foreach ($s in ($needed | Select-Object -Unique)) { if (-not $DryRun) { sudo apt-get install -y $s 2>&1 | Out-Null } }
+    Write-Ok 'ffmpeg installed via apt'
+  }
+  elseif (Test-Cmd 'dnf') {
+    foreach ($s in ($needed | Select-Object -Unique)) { if (-not $DryRun) { sudo dnf install -y $s 2>&1 | Out-Null } }
+    Write-Ok 'ffmpeg installed via dnf'
+  }
+  elseif (Test-Cmd 'pacman') {
+    foreach ($s in ($needed | Select-Object -Unique)) { if (-not $DryRun) { sudo pacman -S --noconfirm $s 2>&1 | Out-Null } }
+    Write-Ok 'ffmpeg installed via pacman'
+  }
   else {
-    Write-Warn2 'Install ffmpeg manually: https://ffmpeg.org/download.html'
+    Write-Warn2 'Install ffmpeg manually: https://ffmpeg.org/download.html (needed for the content/video domain only)'
   }
 }
 
@@ -193,17 +464,79 @@ function Install-OpenCode {
     Write-Ok "opencode already installed (v$v)"
     return
   }
-  if (-not (Test-Cmd 'npm')) { throw "Node.js/npm not found. Install Node 20+ first: https://nodejs.org" }
+  Assert-Node
   Write-Info 'npm install -g @opencode/cli@latest'
   if (-not $DryRun) {
-    & npm install -g '@opencode/cli@latest' 2>&1 | Out-Null
-    $script:InstallFailed = $true
+    $npmOut = & npm install -g '@opencode/cli@latest' 2>&1 | Out-String
+    if ($LASTEXITCODE -ne 0) {
+      # Three distinct causes produce one generic npm failure, and they need
+      # three different fixes - so name the cause rather than passing it on.
+      if ($npmOut -match 'EAI_AGAIN|ENOTFOUND|ECONNREFUSED|ETIMEDOUT|network') {
+        Stop-Install -Code 'E_NETWORK' `
+          -What 'npm could not reach the internet.' `
+          -Impact 'OpenCode was not installed, so nothing else in this installer will work either.' `
+          -Fix "Check your connection, then run this again.`n           If you are behind a proxy or firewall, set it first:`n             $env:HTTPS_PROXY='http://your-proxy:port'`n           Behind a corporate network, also try: npm config set registry https://registry.npmjs.org/"
+      }
+      if ($npmOut -match 'EACCES|EPERM|permission denied') {
+        Stop-Install -Code 'E_PERMISSION_DENIED' `
+          -What 'npm was not allowed to write to its global folder.' `
+          -Impact 'OpenCode was not installed.' `
+          -Fix "Run PowerShell as Administrator and try again.`n           Or point npm at a folder you own:`n             npm config set prefix '$env:APPDATA\npm'`n           Then reopen your terminal and re-run this installer."
+      }
+      Stop-Install -Code 'E_NPM_INSTALL' `
+        -What 'npm failed to install OpenCode.' `
+        -Impact 'OpenCode is the program this whole setup is built on, so the rest cannot run.' `
+        -Fix "npm said:`n           $(($npmOut -split "`r?`n" | Where-Object { $_ -match '\S' } | Select-Object -Last 4) -join "`n           ")`n           You can install it by hand and then re-run this installer:`n             npm install -g @opencode/cli@latest"
+    }
   }
   if (Test-Cmd 'opencode') {
     Write-Ok "opencode installed ($((& opencode --version)))"
   } else {
-    Write-Warn2 'opencode shim not on PATH. Reinstall node/npm or add the npm global bin to PATH.'
+    Stop-Install -Code 'E_PATH_MISSING' `
+      -What 'OpenCode installed successfully but is not on your PATH.' `
+      -Impact 'The config was not written, because a fresh shell could not run opencode to verify it.' `
+      -Fix "Close this terminal and open a new one, then run: opencode --version`n           Still not found? Add npm''s global folder to your PATH:`n             $env:PATH += ';$env:APPDATA\npm'`n           or reinstall Node.js, which puts it back for you."
   }
+}
+
+function Get-BrowserUsePython {
+  # Returns the interpreter path to use for the browser-use MCP server, or $null
+  # to leave the template default alone. Cached, because the venv is created once.
+  if ($script:BuPythonResolved) { return $script:BuPython }
+  $script:BuPythonResolved = $false
+  $script:BuPython = $null
+
+  $stackRoot = if ($env:AGENT_STACK_ROOT) { $env:AGENT_STACK_ROOT } else { Join-Path $Script:UserHome 'agent-stack' }
+  $venvDir  = Join-Path $stackRoot 'browser-use-env'
+  $exe      = if ($IsWindows) { Join-Path $venvDir 'Scripts/python.exe' } else { Join-Path $venvDir 'bin/python' }
+
+  if (Test-Path $exe) { $script:BuPython = $exe; $script:BuPythonResolved = $true; return $exe }
+
+  if ($DryRun -or $SkipDeps) { $script:BuPythonResolved = $true; return $null }
+
+  $py = $null
+  foreach ($c in @('python','python3')) { if (Test-Cmd $c) { $py = $c; break } }
+  if (-not $py) { $script:BuPythonResolved = $true; return $null }
+
+  Write-Info "creating browser-use virtualenv at $venvDir"
+  try {
+    New-Item -ItemType Directory -Force $stackRoot | Out-Null
+    & $py -m venv $venvDir 2>&1 | Out-Null
+    if (-not (Test-Path $exe)) {
+      Write-Warn2 'could not create the browser-use virtualenv - the MCP server will fall back to the system python'
+      $script:BuPythonResolved = $true
+      return $null
+    }
+    & $exe -m pip install --quiet --upgrade pip 2>&1 | Out-Null
+    & $exe -m pip install --quiet browser-use 2>&1 | Out-Null
+    $script:BuPython = $exe
+    Write-Ok "browser-use installed in its own virtualenv"
+  } catch {
+    Write-Warn2 "browser-use virtualenv setup failed: $($_.Exception.Message)"
+    $script:BuPython = $null
+  }
+  $script:BuPythonResolved = $true
+  return $script:BuPython
 }
 
 function Install-PythonDeps {
@@ -218,15 +551,31 @@ function Install-PythonDeps {
 
   $py = $null
   foreach ($c in @('python','python3','py')) { if (Test-Cmd $c) { $py = $c; break } }
-  if (-not $py) { Write-Warn2 'Python not found - skipping python deps'; return }
+  if (-not $py) {
+    # A silent skip here produces a config whose skills all fail at run time,
+    # which is far harder to diagnose than refusing now.
+    $fix = if ($IsWindows) { 'winget install Python.Python.3.12' }
+           elseif (Test-Cmd 'brew') { 'brew install python@3.12' }
+           else { 'sudo apt install python3-venv  (or see https://www.python.org/downloads)' }
+    Stop-Install -Code 'E_NO_PYTHON' `
+      -What 'Python is not installed, but these domains need Python packages.' `
+      -Impact "Agents in: $($Domains -join ', ') will be installed but will fail when they run, because the libraries they import are missing." `
+      -Fix "Install Python 3.10+ and open a new terminal, then run this again.`n           On this machine: $fix`n           Or install the agent setup without any Python now: ./install.ps1 --minimal"
+  }
 
-  # fast path: check all modules in one interpreter launch instead of N
-  $modules = ($pkgs | ForEach-Object { ($_ -replace '-', '_') }) -join ','
+  # Probe by import name, then map back to the PyPI name for anything missing,
+  # because `pip install` needs the package name and `find_spec` needs the
+  # module name. Probing by package name reported a working install as missing.
+  $pairs = @()
+  foreach ($pkg in $pkgs) {
+    $mod = if ($Script:PyImportName.ContainsKey($pkg)) { $Script:PyImportName[$pkg] } else { $pkg -replace '-', '_' }
+    $pairs += "$mod|$pkg"
+  }
   $probeCode = @"
 import importlib.util, sys
-mods = [m.strip() for m in '''$modules'''.split(',') if m.strip()]
-missing = [m for m in mods if importlib.util.find_spec(m) is None]
-print('\n'.join(missing))
+pairs = [p.strip() for p in '''$($pairs -join ',')'''.split(',') if p.strip()]
+# report the PyPI name, not the module name, so the caller can pip install it
+print('\n'.join(p.split('|')[1] for p in pairs if importlib.util.find_spec(p.split('|')[0]) is None))
 "@
   $missing = @()
   if (-not $DryRun) {
@@ -237,8 +586,24 @@ print('\n'.join(missing))
 
   Write-Info "pip install $($missing.Count) package(s): $($missing -join ', ')"
   if (-not $DryRun) {
-    & $py -m pip install --quiet --upgrade pip 2>&1 | Out-Null
-    & $py -m pip install --quiet @missing 2>&1 | Out-Null
+    # Capture stderr: pip's real complaint ("No matching distribution",
+    # "permission denied", "network unreachable") is the only clue to the cause
+    # and Out-Null was discarding it, leaving a bare "installed" message on a
+    # failed install.
+    $pipOut = & $py -m pip install --upgrade pip 2>&1 | Out-String
+    if ($LASTEXITCODE -ne 0) {
+      Stop-Install -Code 'E_PYTHON_INSTALL' `
+        -What 'pip could not upgrade itself.' `
+        -Impact 'No Python packages were installed, so the affected agents will not run.' `
+        -Fix "pip said:`n           $(($pipOut -split "`r?`n" | Where-Object { $_ -match '\S' } | Select-Object -Last 3) -join "`n           ")`n           If this is a permissions problem, try creating a virtual environment first:`n           $py -m venv ~/.venvs/agent-bootstrap"
+    }
+    $pipOut = & $py -m pip install @missing 2>&1 | Out-String
+    if ($LASTEXITCODE -ne 0) {
+      Stop-Install -Code 'E_PYTHON_INSTALL' `
+        -What "pip failed to install: $($missing -join ', ')" `
+        -Impact 'No Python packages were installed, so the affected agents will not run.' `
+        -Fix "pip said:`n           $(($pipOut -split "`r?`n" | Where-Object { $_ -match '\S' } | Select-Object -Last 3) -join "`n           ")`n           You can continue without them: ./install.ps1 --minimal"
+    }
   }
   Write-Ok 'Python dependencies installed'
 }
@@ -285,7 +650,24 @@ function Backup-TargetConfig {
   $bak = "$Target-backup-$stamp"
   Write-Info "backing up -> $bak"
   if (-not $DryRun) {
-    Copy-Item -Path $Target -Destination $bak -Recurse -Force
+    # A failed backup must abort the run, not warn and continue: everything
+    # after this point overwrites the target, and without a backup that
+    # overwrite would be unrecoverable.
+    try {
+      Copy-Item -Path $Target -Destination $bak -Recurse -Force -ErrorAction Stop
+    } catch {
+      $locked = $_.Exception.Message -match 'being used by another process|access is denied'
+      if ($locked) {
+        Stop-Install -Code 'E_CONFIG_LOCKED' `
+          -What "The file $Target is open in another program, so it cannot be backed up." `
+          -Impact 'The installer refuses to continue: it will overwrite that file, and without a backup you could not undo it.' `
+          -Fix "Close OpenCode and any editor showing your config, then run this again.`n           If a backup already exists from an earlier run, delete it first: Remove-Item -Recurse -Force '$bak'"
+      }
+      Stop-Install -Code 'E_PERMISSION_DENIED' `
+        -What "Could not back up $Target" `
+        -Impact 'The installer will not write anything it cannot undo.' `
+        -Fix "The error was: $($_.Exception.Message)`n           If this folder needs admin rights, run PowerShell as Administrator. Otherwise point the installer at a writable folder: --target-config <dir>"
+    }
   }
   return $bak
 }
@@ -351,7 +733,11 @@ function Build-AgentsBlock {
       # a duplicate name silently overwrites the earlier agent in the config
       # block, so fail loudly instead of shipping a short agent list
       if ($seen.ContainsKey($n)) {
-        throw "duplicate agent name '$n' in $($f.FullName) (already defined by $($seen[$n])). Rename one; agent names must be globally unique."
+        Stop-Install -Code 'E_DUPLICATE_AGENT' -ExitCode 2 `
+          -What "Two agent files both call themselves '$n'." `
+          -Impact "Only one can exist under that name. The other would be dropped silently, so the installer stops instead of quietly shipping a shorter agent list." `
+          -Fix "Rename one of these files (the name inside it must match the filename), then re-run:`n           $((Resolve-Path $f.FullName).Path)`n           $($seen[$n])" `
+          -Doc "$Script:DocRoot/guides/custom-agents.md"
       }
       $seen[$n] = $f.FullName
       $entry = [ordered]@{}
@@ -469,7 +855,12 @@ function Write-TargetConfig {
     [string]$Model, [string]$SmallModel, [string]$McpNames
   )
   $tpl = Join-Path $Source 'config/opencode.jsonc'
-  if (-not (Test-Path $tpl)) { throw "template not found: $tpl" }
+  if (-not (Test-Path $tpl)) {
+    Stop-Install -Code 'E_NO_TEMPLATE' -ExitCode 2 `
+      -What "The config template is missing from the agent-bootstrap source tree ($tpl)." `
+      -Impact 'The installer cannot generate a configuration without it.' `
+      -Fix "Re-clone the repo, or run the one-liner which downloads a complete copy:`n           git clone https://github.com/Sachitt-AV-08/agent-bootstrap.git"
+  }
 
   # tui.json carries the theme and keybinds, so an existing one is never
   # clobbered - a user's colour scheme and shortcuts are theirs to choose.
@@ -489,6 +880,16 @@ function Write-TargetConfig {
   $want = @($McpNames -split ',' | Where-Object { $_ -and $_ -ne 'merge' })
   $servers = Build-McpBlock -Source $Source -Names $want
   $overridden = $null
+
+  # The shipped template says `"command": ["python", ...]`, which is wrong for a
+  # fresh machine: browser-use is not in the system Python, so that command
+  # fails with a bare "Connection closed". Point it at the venv we actually
+  # created, if we made one. Runs before the merge below, so a user who already
+  # has a working browser-use entry still keeps their own path.
+  $buPy = Get-BrowserUsePython
+  if ($buPy -and $servers.Contains('browser-use')) {
+    $servers['browser-use'].command = @($buPy, '-m', 'browser_use.mcp.cli_mcp')
+  }
 
   if ($McpNames -match '(^|,)merge(,|$)') {
     $existing = Get-ExistingMcpServers -Target $Target
@@ -525,9 +926,14 @@ function Write-TargetConfig {
   try {
     $null = $probe | ConvertFrom-Json -ErrorAction Stop
   } catch {
+    # A config that fails to parse takes every skill, agent, MCP and permission
+    # rule with it, so this is checked before anything is written.
     $dump = Join-Path ([IO.Path]::GetTempPath()) 'agent-bootstrap-invalid.jsonc'
     try { Set-Content -LiteralPath $dump -Value $text -Encoding UTF8 } catch {}
-    throw "generated config is not valid JSON - nothing was written. Candidate saved to $dump. $($_.Exception.Message)"
+    Stop-Install -Code 'E_CONFIG_INVALID' -ExitCode 2 `
+      -What 'The configuration this installer just generated is not valid JSON, so it was NOT written.' `
+      -Impact 'Nothing was changed. Your existing setup still works exactly as before.' `
+      -Fix "This is an installer bug, not a problem with your machine. The generated file was saved to:`n           $dump`n           Please attach it to a bug report: $Script:DocRoot/../issues"
   }
 
   if (-not $DryRun) {
@@ -582,10 +988,22 @@ function Invoke-Doctor {
   if (Test-Cmd 'opencode' -and $ok) {
     Write-Info 'opencode mcp list'
     $mcp = & opencode mcp list 2>&1 | Out-String
-    foreach ($line in ($mcp -split "`n")) {
+    $broken = @()
+    foreach ($line in ($mcp -split "`r?`n")) {
+      if ([string]::IsNullOrWhiteSpace($line)) { continue }
       if ($line -match 'connected') { Write-Ok ("mcp  " + $line.Trim()) }
-      elseif ($line -match 'needs authentication') { Write-Warn2 ("mcp  " + $line.Trim()) }
-      elseif ($line -match 'failed|error') { Write-Warn2 ("mcp  " + $line.Trim()) }
+      elseif ($line -match 'needs authentication') { Write-Warn2 ("mcp  " + $line.Trim() + '  -> run: opencode, then /mcps') }
+      elseif ($line -match 'failed|error|closed') {
+        Write-Warn2 ("mcp  " + $line.Trim())
+        $broken += $line.Trim()
+      }
+    }
+    if ($broken.Count) {
+      Write-Host ''
+      Write-Info 'MCP servers are optional add-ons. Everything else installed fine, and'
+      Write-Info 'agents that need a broken server will report which one when they run.'
+      Write-Info 'To fix one, check its command and interpreter in ~/.config/opencode/opencode.jsonc,'
+      Write-Info 'or see docs/guides/troubleshooting.md#mcp-server-will-not-start.'
     }
   }
   return $ok
@@ -593,15 +1011,38 @@ function Invoke-Doctor {
 
 # --------------------------- main ---------------------------------
 
+# Resolve-Selection parses $args literally; it also sets $script:Help
+$selected = Resolve-Selection
+
+if ($script:Help) { Write-Usage; exit 0 }
+
+# --self-test: verify the installer's own code paths, install nothing
+if ($SelfTest) {
+  # scripts/ sits next to install.ps1 in a clone; the odd relative path covers
+  # being invoked from ~/.local/share/agent-bootstrap after a one-liner install
+  $candidates = @(
+    (Join-Path $PSCommandPath 'scripts/selftest.ps1'),
+    (Join-Path (Split-Path -Parent $PSCommandPath) 'scripts/selftest.ps1')
+  )
+  $testScript = @($candidates | Where-Object { $_ -and (Test-Path $_) }) | Select-Object -First 1
+  if (-not $testScript) {
+    Stop-Install -Code 'E_NO_SELFTEST' -ExitCode 2 `
+      -What 'The self-test script (scripts/selftest.ps1) is missing from the source tree.' `
+      -Impact 'Cannot verify the installer.' `
+      -Fix 'Re-clone the repo, or run the one-liner which downloads a complete copy.'
+  }
+  & pwsh -NoProfile -File $testScript
+  exit $LASTEXITCODE
+}
+
 Write-Host ''
 Write-Host '  agent-bootstrap' -ForegroundColor White -NoNewline
 Write-Host '  -  universal AI agent setup' -ForegroundColor DarkGray
 Write-Host '  ------------------------------------------------' -ForegroundColor DarkGray
 
-# tolerate `--all` / `--minimal` style (double-dash) flags that PowerShell binds
-# into the string[] parameters; Resolve-Selection reclassifies them into switches
-$selected = Resolve-Selection
-$With = @($With | Where-Object { $_ -and $_ -notmatch '^-' })
+# Resolve-Selection already split flags from values; read the normalised list
+$With = @($script:With)
+if (-not $With) { $With = @() }
 if (-not $TargetConfig) { $TargetConfig = Join-Path $Script:UserHome '.config/opencode' }
 
 Write-Info "domains: $($selected -join ', ')"

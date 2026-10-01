@@ -3,23 +3,57 @@
 ## Prerequisites
 
 - macOS 12+ (Monterey or later)
-- Homebrew (auto-installed if missing)
 - Terminal (iTerm2 recommended)
+- Homebrew, Git, and Node.js 20+ — the installer will tell you if any is missing
+
+PowerShell 7 is installed automatically if needed (`brew install --cask powershell`),
+so you do not need to install it yourself.
 
 ## Quick Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/<your-repo>/agent-bootstrap/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Sachitt-AV-08/agent-bootstrap/main/install.sh | bash
 ```
 
 Or clone and run locally:
 
 ```bash
-git clone https://github.com/<your-repo>/agent-bootstrap.git
+git clone https://github.com/Sachitt-AV-08/agent-bootstrap.git
 cd agent-bootstrap
 chmod +x install.sh
 ./install.sh
 ```
+
+Preview without changing anything:
+
+```bash
+./install.sh --dry-run
+```
+
+## How this differs from Windows
+
+`install.sh` is a bootstrap, not a second installer. It downloads the repo,
+installs PowerShell 7 if missing, then runs `install.ps1` — the same installer
+Windows uses. So you get the same 163 agents, the same MCP handling, the same
+error messages and the same `--self-test` on both platforms.
+
+Verify it:
+
+```bash
+./install.sh --self-test
+```
+
+## Paths on macOS
+
+| What | Path |
+|------|------|
+| Repo checkout | `~/.local/share/agent-bootstrap` |
+| OpenCode config | `~/.config/opencode/opencode.jsonc` |
+| Commands | `~/.config/opencode/commands/` |
+| Skills | `~/.config/opencode/skills/` |
+| Helper scripts | `~/.local/bin/` |
+| Config backup | `~/.config/opencode-backup-<timestamp>/` |
+| browser-use venv | `~/agent-stack/browser-use-env/bin/python` |
 
 ## What Gets Installed
 

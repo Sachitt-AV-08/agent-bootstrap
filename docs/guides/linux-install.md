@@ -6,20 +6,59 @@
 - Package manager: apt, dnf, pacman, or zypper
 - Bash shell
 
+Nothing else needs to be installed by hand. `install.sh` will install PowerShell 7
+if it is missing, then run the same installer used on Windows.
+
 ## Quick Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/<your-repo>/agent-bootstrap/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Sachitt-AV-08/agent-bootstrap/main/install.sh | bash
 ```
 
 Or clone and run locally:
 
 ```bash
-git clone https://github.com/<your-repo>/agent-bootstrap.git
+git clone https://github.com/Sachitt-AV-08/agent-bootstrap.git
 cd agent-bootstrap
 chmod +x install.sh
 ./install.sh
 ```
+
+Preview without changing anything:
+
+```bash
+./install.sh --dry-run
+```
+
+## How this differs from Windows
+
+`install.sh` is a bootstrap, not a second installer. It does three things:
+
+1. Downloads a copy of the repo to `~/.local/share/agent-bootstrap` (skipped when
+   you run it from a clone).
+2. Installs PowerShell 7 if needed — Homebrew on macOS, Microsoft's official
+   script on Linux, then your distro package.
+3. Hands off to `install.ps1`, which runs natively on Linux.
+
+Everything of substance lives in `install.ps1`, so macOS, Linux and Windows share
+one implementation: the same 163 agents, the same MCP handling, the same error
+messages, and the same `--self-test`. A second installer in bash would mean
+maintaining every future fix twice, and Linux would quietly drift behind.
+
+## Paths on Linux
+
+| What | Path |
+|------|------|
+| Repo checkout | `~/.local/share/agent-bootstrap` |
+| OpenCode config | `~/.config/opencode/opencode.jsonc` |
+| Commands | `~/.config/opencode/commands/` |
+| Skills | `~/.config/opencode/skills/` |
+| Helper scripts | `~/.local/bin/` |
+| Config backup | `~/.config/opencode-backup-<timestamp>/` |
+| browser-use venv | `~/agent-stack/browser-use-env/bin/python` |
+
+`~/.local/bin` is added to your `PATH` automatically. Open a new terminal, or run
+`source ~/.bashrc` (or `~/.zshrc`), before using `doctor`.
 
 ## What Gets Installed
 

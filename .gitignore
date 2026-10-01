@@ -13,3 +13,10 @@ __pycache__/
 *.db
 *.db-wal
 *.db-shm
+
+# Guard against a regression where a flag token gets used as a path value and
+# the installer writes its output into a folder named after the flag. If this
+# ever appears in the tree again, the argument parser is broken again.
+/--*/
+/--*/*
+*-backup-*/

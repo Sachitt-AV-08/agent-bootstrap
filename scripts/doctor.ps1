@@ -117,18 +117,26 @@ foreach ($pair in @(
 
 $py = Get-Command python -ErrorAction SilentlyContinue
 if ($py) {
+  # Probe by module name and report the PyPI name, because the two differ
+  # (newspaper3k imports as `newspaper`). Probing by package name reported a
+  # working install as missing and sent people hunting a nonexistent problem.
   $code = @'
 import importlib.util
-mods = ["yt_dlp","youtube_transcript_api","bs4","lxml","selectolax","trafilatura",
-        "newspaper3k","scrapy","chromadb","qdrant_client","mem0","faiss","playwright"]
-present = [m for m in mods if importlib.util.find_spec(m)]
-missing = [m for m in mods if m not in present]
+mods = ["yt_dlp:yt-dlp","youtube_transcript_api:youtube-transcript-api","bs4:beautifulsoup4",
+        "lxml:lxml","selectolax:selectolax","trafilatura:trafilatura",
+        "newspaper:newspaper3k","scrapy:scrapy","chromadb:chromadb",
+        "qdrant_client:qdrant-client","mem0:mem0ai","faiss:faiss-cpu","playwright:playwright"]
+present = [pkg for mod, pkg in (m.split(":") for m in mods) if importlib.util.find_spec(mod)]
+missing = [pkg for mod, pkg in (m.split(":") for m in mods) if not importlib.util.find_spec(mod)]
 print("present=" + ",".join(present))
 print("missing=" + ",".join(missing))
 '@
   $out = & python -c $code 2>$null | Out-String
   $missing = if ($out -match 'missing=([^\r\n]*)') { $Matches[1] } else { '' }
-  if ($missing) { Warn2 'python-deps' "missing: $missing" }
+  if ($missing) {
+    Warn2 'python-deps' "missing: $missing"
+    Write-Host '        fix: python -m pip install ' (($missing -split ',') -join ' ') -ForegroundColor DarkGray
+  }
   else { Ok 'python-deps' 'scraping + memory + playback deps present' }
 }
 
