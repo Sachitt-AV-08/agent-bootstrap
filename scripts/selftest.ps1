@@ -518,6 +518,40 @@ Check 'interactive mode is gated on an interactive terminal' `
 Check 'non-interactive runs are not prompted' `
       ($menuText -match 'Running without a terminal to ask questions on')
 
+# ---------------------------------------------------------------- test 11
+# Both docs indexes shipped with every relative link broken, and seven of the
+# "reference" pages never existed at all. Nobody notices a dead doc link until
+# they are already confused, which is the worst possible time.
+Write-Suite '11. documentation links resolve'
+$deadLinks = New-Object System.Collections.Generic.List[string]
+$linkCount = 0
+Get-ChildItem -LiteralPath $Source -Recurse -Filter '*.md' -File | ForEach-Object {
+  $f = $_
+  $text = Get-Content -LiteralPath $f.FullName -Raw
+  foreach ($m in [regex]::Matches($text, '\[[^\]]*\]\(([^)\s]+)\)')) {
+    $t = $m.Groups[1].Value
+    if ($t -match '^(https?:|mailto:|#)') { continue }
+    $t = $t -replace '#.*$', ''
+    if (-not $t) { continue }
+    $linkCount++
+    $resolved = Join-Path $f.DirectoryName $t
+    if (-not (Test-Path $resolved)) {
+      $rel = $f.FullName.Substring($Source.Length).TrimStart('\','/')
+      $deadLinks.Add("$rel -> $t")
+    }
+  }
+}
+Check "all $linkCount relative markdown links resolve" `
+      ($deadLinks.Count -eq 0) `
+      ("broken: " + (@($deadLinks) -join '; '))
+# the two indexes are the ones that were wrong, so name them explicitly
+foreach ($idx in @('docs/guides/index.md','docs/reference/index.md')) {
+  $p = Join-Path $Source $idx
+  Check "index exists and is not the broken-prefix form: $idx" `
+        ((Test-Path $p) -and ((Get-Content -LiteralPath $p -Raw) -notmatch '\]\(reference/') -and
+         ((Get-Content -LiteralPath $p -Raw) -notmatch '\]\(guides/'))
+}
+
 # ---------------------------------------------------------------- summary
 Write-Host ''
 Write-Host '  ----------------------------------------------------' -ForegroundColor DarkGray
